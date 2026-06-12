@@ -1,0 +1,36 @@
+{
+  "name": "premiere-pro-agent",
+  "version": "0.1.0",
+  "description": "CLI that lets AI agents edit your Adobe Premiere Pro timeline.",
+  "license": "MIT",
+  "author": "thedalbee",
+  "type": "module",
+  "bin": {
+    "ppro": "bin/ppro.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test"
+  },
+  "keywords": [
+    "premiere-pro",
+    "adobe",
+    "ai-agent",
+    "video-editing",
+    "cli",
+    "agent"
+  ],
+  "files": [
+    "README.md",
+    "bin",
+    "dist",
+    "plugin"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
