@@ -315,27 +315,67 @@ function enqueueChildren(
 
 /**
  * Find VideoMediaSource and AudioMediaSource ObjectIDs for a media path.
- * Searches by file path string. Returns null if not found.
+ *
+ * Strategy: find the <Media> element(s) whose <FilePath> or <Title> matches
+ * the given path or basename, collect their ObjectUIDs, then find
+ * VideoMediaSource / AudioMediaSource that reference those Media UIDs.
+ *
+ * Returns { videoSourceId: null, audioSourceId: null } if not found.
  */
 function findMediaSourceIds(
   xml: string,
   mediaPath: string,
 ): { videoSourceId: number | null; audioSourceId: number | null } {
   const baseName = path.basename(mediaPath);
-  // Find any VideoMediaSource near the media path
-  const pathPattern = new RegExp(
-    `<VideoMediaSource ObjectID="(\\d+)"[^>]*>.*?${escapeRegex(baseName)}.*?</VideoMediaSource>`,
-    "s",
-  );
-  const vm = pathPattern.exec(xml);
-  const videoSourceId = vm ? parseInt(vm[1], 10) : null;
+  const absPath = mediaPath.includes("/") ? mediaPath : null;
 
-  const pathPattern2 = new RegExp(
-    `<AudioMediaSource ObjectID="(\\d+)"[^>]*>.*?${escapeRegex(baseName)}.*?</AudioMediaSource>`,
-    "s",
-  );
-  const am = pathPattern2.exec(xml);
-  const audioSourceId = am ? parseInt(am[1], 10) : null;
+  // Collect Media UIDs whose path matches
+  const matchedMediaUids = new Set<string>();
+  const mediaRe = /Media ObjectUID="([0-9a-f-]{36})"[^>]*>[\s\S]*?<\/Media>/g;
+  let mm: RegExpExecArray | null;
+  while ((mm = mediaRe.exec(xml)) !== null) {
+    const block = mm[0];
+    const titleMatch = /<Title>([^<]+)<\/Title>/.exec(block);
+    const pathMatch = /<(?:FilePath|ActualMediaFilePath|RelativePath)>([^<]+)<\/(?:FilePath|ActualMediaFilePath|RelativePath)>/.exec(block);
+    const blockTitle = titleMatch?.[1] ?? "";
+    const blockPath = pathMatch?.[1] ?? "";
+    if (
+      blockTitle === baseName ||
+      path.basename(blockTitle) === baseName ||
+      blockPath.endsWith(baseName) ||
+      (absPath && blockPath === absPath)
+    ) {
+      matchedMediaUids.add(mm[1]);
+    }
+  }
+
+  if (matchedMediaUids.size === 0) {
+    return { videoSourceId: null, audioSourceId: null };
+  }
+
+  // Find VideoMediaSource and AudioMediaSource that reference any of those Media UIDs
+  let videoSourceId: number | null = null;
+  let audioSourceId: number | null = null;
+
+  for (const uid of matchedMediaUids) {
+    if (videoSourceId === null) {
+      const vPat = new RegExp(
+        `VideoMediaSource ObjectID="(\\d+)"[^>]*>[\\s\\S]*?Media ObjectURef="${uid}"[\\s\\S]*?</VideoMediaSource>`,
+        "s",
+      );
+      const vm = vPat.exec(xml);
+      if (vm) videoSourceId = parseInt(vm[1], 10);
+    }
+    if (audioSourceId === null) {
+      const aPat = new RegExp(
+        `AudioMediaSource ObjectID="(\\d+)"[^>]*>[\\s\\S]*?Media ObjectURef="${uid}"[\\s\\S]*?</AudioMediaSource>`,
+        "s",
+      );
+      const am = aPat.exec(xml);
+      if (am) audioSourceId = parseInt(am[1], 10);
+    }
+    if (videoSourceId !== null && audioSourceId !== null) break;
+  }
 
   return { videoSourceId, audioSourceId };
 }
@@ -549,17 +589,32 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
   let xml = gunzipSync(prprojPath);
 
   // ── 2. Find template sequence ─────────────────────────────────────────────
-  const tmplSeqMatch = new RegExp(
-    `<Sequence ObjectUID="([0-9a-f-]{36})"[^>]*>.*?<Name>${escapeRegex(templateSequenceName)}</Name>.*?</Sequence>`,
-    "s",
-  ).exec(xml);
-  if (!tmplSeqMatch) {
+  // Do NOT use a cross-sequence regex — find each Sequence block individually
+  // then check if it contains the target Name.
+  let templateSeqUid: string | null = null;
+  let tmplSeqBlock: string | null = null;
+  {
+    const seqUidRe = /Sequence ObjectUID="([0-9a-f-]{36})"/g;
+    let seqM: RegExpExecArray | null;
+    while ((seqM = seqUidRe.exec(xml)) !== null) {
+      const uid = seqM[1];
+      const seqStart = xml.lastIndexOf("<", seqM.index);
+      const seqEndTag = xml.indexOf("</Sequence>", seqStart);
+      if (seqEndTag === -1) continue;
+      const block = xml.slice(seqStart, seqEndTag + "</Sequence>".length);
+      // Check Name is directly in this block (not a nested sequence)
+      if (block.includes(`<Name>${templateSequenceName}</Name>`)) {
+        templateSeqUid = uid;
+        tmplSeqBlock = block;
+        break;
+      }
+    }
+  }
+  if (!templateSeqUid || !tmplSeqBlock) {
     throw new Error(`Template sequence "${templateSequenceName}" not found in project`);
   }
-  const templateSeqUid = tmplSeqMatch[1];
 
   // ── 3. Find template sequence's V1/A1 track UIDs ─────────────────────────
-  const tmplSeqBlock = tmplSeqMatch[0];
   const vTrackGroupRef = /Second ObjectRef="(\d+)"/.exec(tmplSeqBlock);
   if (!vTrackGroupRef) throw new Error("Template sequence: VideoTrackGroup ObjectRef not found");
   const vTrackGroupId = parseInt(vTrackGroupRef[1], 10);
@@ -637,8 +692,13 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
         `<Name>${templateSequenceName}</Name>`,
         `<Name>${newSequenceName}</Name>`,
       );
-      // Clear any TrackItems from the track blocks (template may have clips)
-      // This is done below at the track level.
+    }
+    // Clear TrackItems from cloned clip tracks — template may have existing clips
+    if (tag === "VideoClipTrack" || tag === "AudioClipTrack") {
+      remapped = remapped.replace(
+        /<TrackItems Version="1">[\s\S]*?<\/TrackItems>/,
+        '<TrackItems Version="1">\n\t\t\t\t\t</TrackItems>',
+      );
     }
     seqCloneBlocks.push(remapped);
   }

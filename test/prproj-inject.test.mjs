@@ -20,7 +20,10 @@ const { injectClips, selfValidate, TICKS_PER_SECOND } = await import(
 
 // ── fixture paths ──────────────────────────────────────────────────────────
 const FIXTURE_PRPROJ = "/tmp/prproj_lab/I45_INJECT_MID.prproj";
-const FIXTURE_MEDIA = "/Volumes/X31/youtube/recordings/I45.mov";
+// findMediaSourceIds matches by <Title> or <FilePath> in the prproj XML —
+// the file does NOT need to exist on disk. Use the basename as found in the Media Title.
+// (From I45.xml: <Title>2026-06-11 23-33-37.mp4</Title>)
+const FIXTURE_MEDIA = "2026-06-11 23-33-37.mp4";
 const TEMPLATE_SEQ = "FCP_XML_TEST";
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -78,7 +81,7 @@ test("fixture prproj can be gunzipped and is valid XML", { skip: !fixtureAvailab
 
 test(
   "injectClips: 3 clips into FCP_XML_TEST template → validation passes",
-  { skip: !fixtureAvailable() || !fs.existsSync(FIXTURE_MEDIA) },
+  { skip: !fixtureAvailable() },
   async (t) => {
     // Work on a temp copy so we don't mutate the fixture
     const tmpProj = FIXTURE_PRPROJ + ".inject-test-" + process.pid + ".prproj";
@@ -122,7 +125,7 @@ test(
 
 test(
   "injectClips: backup is created",
-  { skip: !fixtureAvailable() || !fs.existsSync(FIXTURE_MEDIA) },
+  { skip: !fixtureAvailable() },
   async (t) => {
     const tmpProj = FIXTURE_PRPROJ + ".bak-test-" + process.pid + ".prproj";
     fs.copyFileSync(FIXTURE_PRPROJ, tmpProj);
