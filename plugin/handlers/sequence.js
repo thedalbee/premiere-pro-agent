@@ -467,3 +467,28 @@ async function placeClips({ project, seq, sourceItem, clips, startIndex, timelin
 module.exports = {
   "sequence.cut": sequenceCut,
 };
+
+async function sequenceInspect({ sequenceName }) {
+  const project = await getActiveProject();
+  const seq = await findSequenceByName(project, sequenceName);
+  if (!seq) throw new Error(`sequence "${sequenceName}" not found`);
+  const out = { name: seq.name, endSec: (await seq.getEndTime()).seconds, video: [], audio: [] };
+  try {
+    out.timebaseTicks = String(await seq.getTimebase());
+  } catch {
+    out.timebaseTicks = null;
+  }
+  const vCount = await seq.getVideoTrackCount();
+  for (let i = 0; i < vCount; i++) {
+    const track = await seq.getVideoTrack(i);
+    out.video.push(((await track.getTrackItems(1, false)) || []).length);
+  }
+  const aCount = await seq.getAudioTrackCount();
+  for (let i = 0; i < aCount; i++) {
+    const track = await seq.getAudioTrack(i);
+    out.audio.push(((await track.getTrackItems(1, false)) || []).length);
+  }
+  return out;
+}
+
+module.exports["sequence.inspect"] = sequenceInspect;

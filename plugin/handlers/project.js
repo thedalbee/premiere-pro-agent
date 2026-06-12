@@ -40,7 +40,16 @@ async function projectSave() {
   return { saved: true, path: project.path };
 }
 
+async function projectImport({ paths }) {
+  if (!Array.isArray(paths) || paths.length === 0) throw new Error("paths[] required");
+  const project = await ppro.Project.getActiveProject();
+  if (!project) throw new Error("no project open in Premiere");
+  const ok = await project.importFiles(paths);
+  return { imported: ok !== false, paths };
+}
+
 module.exports = {
   "project.info": projectInfo,
   "project.save": projectSave,
+  "project.import": projectImport,
 };
