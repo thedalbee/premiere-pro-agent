@@ -1,5 +1,6 @@
 import { doctor } from "./commands/doctor.js";
 import { status } from "./commands/status.js";
+import { transcribeCommand } from "./commands/transcribe.js";
 import { EXIT, type ExitCode } from "./output/exit-codes.js";
 
 export interface Command {
@@ -8,7 +9,7 @@ export interface Command {
   run(argv: string[]): Promise<ExitCode>;
 }
 
-const COMMANDS: Command[] = [doctor, status];
+const COMMANDS: Command[] = [doctor, status, transcribeCommand];
 
 function printUsage(): void {
   const width = Math.max(...COMMANDS.map((c) => c.name.length));

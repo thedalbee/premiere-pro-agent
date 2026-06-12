@@ -1,0 +1,137 @@
+import { spawn } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const run = promisify(execFile);
+
+export const WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo";
+
+export interface TranscriptWord {
+  text: string;
+  start: number;
+  end: number;
+  confidence: number;
+}
+
+export interface Transcript {
+  model: string;
+  language: string;
+  durationSec: number;
+  words: TranscriptWord[];
+  text: string;
+}
+
+// Runs inside the user's Python. Anti-hallucination settings
+// (condition_on_previous_text=False, compression_ratio_threshold=2.0)
+// are required — without them Whisper loops on Korean speech.
+const PYTHON_SCRIPT = `
+import json, sys
+import mlx_whisper
+
+audio_path, language, model = sys.argv[1], sys.argv[2], sys.argv[3]
+result = mlx_whisper.transcribe(
+    audio_path,
+    path_or_hf_repo=model,
+    language=None if language == "auto" else language,
+    word_timestamps=True,
+    condition_on_previous_text=False,
+    temperature=(0.0, 0.2, 0.4, 0.6),
+    compression_ratio_threshold=2.0,
+    no_speech_threshold=0.6,
+    verbose=False,
+)
+words = [
+    {
+        "text": w["word"].strip(),
+        "start": round(float(w["start"]), 3),
+        "end": round(float(w["end"]), 3),
+        "confidence": round(float(w.get("probability", 1.0)), 4),
+    }
+    for seg in result["segments"]
+    for w in seg.get("words", [])
+]
+print(json.dumps({
+    "language": result.get("language", language),
+    "words": words,
+    "text": result.get("text", "").strip(),
+}, ensure_ascii=False))
+`;
+
+export async function extractAudio(inputPath: string, onNote: (note: string) => void): Promise<string> {
+  const wavPath = path.join(
+    os.tmpdir(),
+    `ppro-${path.basename(inputPath, path.extname(inputPath))}-16k.wav`,
+  );
+  onNote(`extracting audio → ${wavPath}`);
+  await run("ffmpeg", [
+    "-y",
+    "-i",
+    inputPath,
+    "-vn",
+    "-ar",
+    "16000",
+    "-ac",
+    "1",
+    "-c:a",
+    "pcm_s16le",
+    wavPath,
+  ]);
+  return wavPath;
+}
+
+export function transcribe(
+  audioPath: string,
+  language: string,
+  onNote: (note: string) => void,
+): Promise<Pick<Transcript, "language" | "words" | "text">> {
+  const python = process.env.PPRO_PYTHON ?? "python3";
+  onNote(`transcribing with ${WHISPER_MODEL} (this downloads the model on first run)`);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, ["-c", PYTHON_SCRIPT, audioPath, language, WHISPER_MODEL]);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`whisper failed (exit ${code}): ${stderr.split("\n").slice(-5).join(" ")}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch {
+        reject(new Error("whisper returned unparseable output"));
+      }
+    });
+  });
+}
+
+export async function mediaDurationSec(inputPath: string): Promise<number> {
+  const { stdout } = await run("ffprobe", [
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    inputPath,
+  ]);
+  return Number.parseFloat(stdout.trim());
+}
+
+export function cleanupTempAudio(wavPath: string): void {
+  try {
+    fs.unlinkSync(wavPath);
+  } catch {
+    // temp file cleanup is best-effort
+  }
+}
