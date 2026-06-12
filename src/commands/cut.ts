@@ -22,6 +22,7 @@ const DURATION_TOLERANCE_SEC = 1.0;
 
 interface CutActionResult {
   sequenceName: string;
+  startIndex: number;
   placedCount: number;
   requestedCount: number;
   sequenceEndSec: number;
@@ -55,6 +56,8 @@ async function runCut(argv: string[]): Promise<ExitCode> {
       json: { type: "boolean", default: false },
       remove: { type: "string", multiple: true },
       sequence: { type: "string" },
+      template: { type: "string" },
+      resume: { type: "boolean", default: false },
       overwrite: { type: "boolean", default: false },
       "no-checkpoint": { type: "boolean", default: false },
       output: { type: "string", short: "o" },
@@ -63,7 +66,7 @@ async function runCut(argv: string[]): Promise<ExitCode> {
 
   const mediaPath = positionals[0];
   if (!mediaPath || !values.remove || values.remove.length === 0) {
-    note("usage: ppro cut <media-file> --remove <ranges.json> [--remove more.json] [--sequence NAME] [--overwrite]");
+    note("usage: ppro cut <media-file> --remove <ranges.json> [--remove more.json] [--sequence NAME] [--template SEQUENCE] [--overwrite]");
     return EXIT.USAGE;
   }
   if (!fs.existsSync(mediaPath)) {
@@ -94,13 +97,13 @@ async function runCut(argv: string[]): Promise<ExitCode> {
     `${clips.length} clips to place (${predictedSec}s kept, ${removedSec}s removed) → sequence "${sequenceName}"`,
   );
 
-  if (!values["no-checkpoint"]) {
+  if (!values["no-checkpoint"] && !values.resume) {
     const { checkpointPath } = await createCheckpoint();
     note(`checkpoint → ${sanitizePath(checkpointPath)}`);
   }
 
   note(`placing ${clips.length} clips in Premiere (this can take a while)...`);
-  const timeoutMs = 60_000 + clips.length * 1_500;
+  const timeoutMs = 120_000 + clips.length * 3_000;
   const result = (await callPremiere(
     "sequence.cut",
     {
@@ -108,6 +111,8 @@ async function runCut(argv: string[]): Promise<ExitCode> {
       sequenceName,
       clips,
       overwrite: values.overwrite,
+      templateName: values.template,
+      resume: values.resume,
     },
     timeoutMs,
   )) as CutActionResult;
@@ -118,8 +123,12 @@ async function runCut(argv: string[]): Promise<ExitCode> {
   const fps = result.timebaseTicks ? Math.round((TICKS_PER_SECOND / Number(result.timebaseTicks)) * 100) / 100 : null;
 
   const failures: string[] = [];
-  if (result.placedCount !== clips.length) {
-    failures.push(`placed ${result.placedCount}/${clips.length} clips`);
+  const startIndex = result.startIndex ?? 0;
+  if (startIndex + result.placedCount !== clips.length) {
+    failures.push(`placed ${startIndex}+${result.placedCount}/${clips.length} clips`);
+  }
+  if (result.trackCounts.video[0] !== clips.length) {
+    failures.push(`V1 has ${result.trackCounts.video[0]} items, expected ${clips.length}`);
   }
   if (gapAudit.gapCount > 0) {
     failures.push(`${gapAudit.gapCount} clip gap(s) over ${GAP_TOLERANCE_SEC}s (max ${gapAudit.maxGapSec}s)`);
@@ -127,9 +136,9 @@ async function runCut(argv: string[]): Promise<ExitCode> {
   if (durationDiff > DURATION_TOLERANCE_SEC) {
     failures.push(`sequence is ${result.sequenceEndSec}s, predicted ${predictedSec}s (diff ${durationDiff.toFixed(3)}s)`);
   }
-  const audioMismatch = result.trackCounts.audio.some((count) => count > 0 && count !== result.placedCount);
+  const audioMismatch = result.trackCounts.audio.some((count) => count > 0 && count !== clips.length);
   if (audioMismatch) {
-    failures.push(`audio track clip counts ${JSON.stringify(result.trackCounts.audio)} != placed ${result.placedCount}`);
+    failures.push(`audio track clip counts ${JSON.stringify(result.trackCounts.audio)} != expected ${clips.length}`);
   }
 
   const report = {

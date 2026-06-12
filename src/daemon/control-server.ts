@@ -20,6 +20,8 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 export function createControlServer(bridge: PluginBridge): http.Server {
   return http.createServer(async (req, res) => {
     const respond = (code: number, payload: unknown) => {
+      // The client may have given up on a long action; don't crash on its corpse.
+      if (res.destroyed || res.writableEnded) return;
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(payload));
     };

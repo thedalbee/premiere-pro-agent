@@ -4,9 +4,10 @@
 
 const PROTOCOL = 1;
 const VERSION = "0.1.0";
-// "localhost" (not 127.0.0.1) — UXP matches network permissions by the
-// literal domain string in the loaded manifest, and the long-lived manifest
-// entry is "ws://localhost". The daemon still binds to 127.0.0.1 only.
+// "localhost" (not 127.0.0.1) — the loaded permission snapshot only matches
+// "ws://localhost" (UXP matches the literal manifest string at load time).
+// Keep port 7200 clear of foreign listeners; localhost may resolve to ::1
+// first, so the daemon must be the only listener on either family.
 const WS_URL = "ws://localhost:7200";
 const RECONNECT_MS = 2000;
 

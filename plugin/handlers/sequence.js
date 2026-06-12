@@ -57,22 +57,8 @@ async function getEditor(seq) {
 // sequence.getSelection() — TrackItemSelection.createEmptySelection() does
 // NOT work in this Premiere build (lesson L091). API signatures vary between
 // builds, so the remove action uses a verified fallback chain.
-async function clearAllClips(project, seq) {
-  const items = [];
-  const vCount = await seq.getVideoTrackCount();
-  for (let i = 0; i < vCount; i++) {
-    const track = await seq.getVideoTrack(i);
-    const found = await track.getTrackItems(1, false);
-    if (found) items.push(...found);
-  }
-  const aCount = await seq.getAudioTrackCount();
-  for (let i = 0; i < aCount; i++) {
-    const track = await seq.getAudioTrack(i);
-    const found = await track.getTrackItems(1, false);
-    if (found) items.push(...found);
-  }
-  if (items.length === 0) return;
-
+async function removeItems(project, seq, items) {
+  if (!items || items.length === 0) return;
   const selection = await seq.getSelection();
   for (const item of items) {
     try {
@@ -90,7 +76,6 @@ async function clearAllClips(project, seq) {
     () => editor.createRemoveItemsAction(selection),
   ];
   const removeErrors = [];
-  let removed = false;
   for (const makeAction of removeVariants) {
     try {
       project.lockedAccess(() => {
@@ -98,15 +83,31 @@ async function clearAllClips(project, seq) {
           tx.addAction(makeAction());
         });
       });
-      removed = true;
-      break;
+      return;
     } catch (error) {
       removeErrors.push(String((error && error.message) || error));
     }
   }
-  if (!removed) {
-    throw new Error(`remove action failed: ${removeErrors.join(" / ")}`);
+  throw new Error(`remove action failed: ${removeErrors.join(" / ")}`);
+}
+
+async function clearAllClips(project, seq) {
+  const items = [];
+  const vCount = await seq.getVideoTrackCount();
+  for (let i = 0; i < vCount; i++) {
+    const track = await seq.getVideoTrack(i);
+    const found = await track.getTrackItems(1, false);
+    if (found) items.push(...found);
   }
+  const aCount = await seq.getAudioTrackCount();
+  for (let i = 0; i < aCount; i++) {
+    const track = await seq.getAudioTrack(i);
+    const found = await track.getTrackItems(1, false);
+    if (found) items.push(...found);
+  }
+  if (items.length === 0) return;
+
+  await removeItems(project, seq, items);
 
   // verify the timeline is actually empty — a sequence that silently keeps
   // its full-length source clip would corrupt every placement after it
@@ -161,15 +162,75 @@ async function sequenceCut(params) {
   }
 }
 
-async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite }, setStage) {
+async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite, templateName, resume }, setStage) {
   setStage("getProject");
   const project = await getActiveProject();
 
   setStage("checkExistingSequence");
   const existing = await findSequenceByName(project, sequenceName);
+  if (existing && resume) {
+    // Resume mode: the UXP runtime dies after a few hundred rapid placements,
+    // but everything placed so far is real. Walk V1 in order and find the
+    // first item that does not end where clip i should end — the death can
+    // hit between the overwrite/trim/move transactions, so the tail can be
+    // untrimmed, half-trimmed or unmoved. Everything from there is removed.
+    setStage("resumeInspect");
+    const sourceItem = await ensureImported(project, mediaPath);
+    const durOf = (n) => clips.slice(0, n).reduce((s, c) => s + (c.end - c.start), 0);
+    const vTrack = await existing.getVideoTrack(0);
+    const vItems = (await vTrack.getTrackItems(1, false)) || [];
+    let placedAlready = 0;
+    for (let i = 0; i < vItems.length; i++) {
+      const en = await vItems[i].getEndTime();
+      if (Math.abs(en.seconds - durOf(i + 1)) > 0.3) break;
+      placedAlready = i + 1;
+    }
+    const goodEnd = durOf(placedAlready);
+
+    const stragglers = vItems.slice(placedAlready);
+    const aCount = await existing.getAudioTrackCount();
+    for (let ai = 0; ai < aCount; ai++) {
+      const track = await existing.getAudioTrack(ai);
+      const items = (await track.getTrackItems(1, false)) || [];
+      for (const item of items) {
+        const en = await item.getEndTime();
+        if (en.seconds > goodEnd + 0.25) stragglers.push(item);
+      }
+    }
+    if (stragglers.length > 0) {
+      setStage("removeStragglers");
+      await removeItems(project, existing, stragglers);
+    }
+    if (placedAlready >= clips.length) {
+      throw new Error(`resume: sequence already has ${placedAlready} clips (requested ${clips.length})`);
+    }
+    return placeClips({
+      project,
+      seq: existing,
+      sourceItem,
+      clips,
+      startIndex: placedAlready,
+      timelineStartSec: goodEnd,
+      setStage,
+    });
+  }
   if (existing) {
     if (!overwrite) {
       throw new Error(`sequence "${sequenceName}" already exists — pass overwrite to replace it`);
+    }
+    // Deleting the sequence that is open/active crashed Premiere mid-build
+    // twice (the two successful runs never deleted an active sequence).
+    // Move activation to any other sequence before deleting.
+    setStage("deactivateExistingSequence");
+    try {
+      const active = await project.getActiveSequence();
+      if (active && active.name === existing.name) {
+        const all = await project.getSequences();
+        const other = (all || []).find((s) => s.name !== existing.name);
+        if (other) await project.setActiveSequence(other);
+      }
+    } catch {
+      // best effort — deletion below still proceeds
     }
     setStage("deleteExistingSequence");
     const deleted = await project.deleteSequence(existing);
@@ -179,14 +240,55 @@ async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite }, 
   setStage("importMedia");
   const sourceItem = await ensureImported(project, mediaPath);
 
-  // createSequenceFromMedia inherits the source's fps/frame size (a preset
-  // guess from createSequence would not), then we empty the timeline.
-  setStage("createSequence");
-  const seq = await project.createSequenceFromMedia(sequenceName, [sourceItem]);
-  if (!seq) throw new Error("createSequenceFromMedia returned nothing");
-  setStage("clearInitialClips");
-  await clearAllClips(project, seq);
+  let seq;
+  if (templateName) {
+    setStage("cloneTemplate");
+    const templateSeq = await findSequenceByName(project, templateName);
+    if (!templateSeq) throw new Error(`template sequence "${templateName}" not found`);
 
+    // Snapshot existing sequence IDs so the new clone can be identified by diff.
+    const beforeSeqs = await project.getSequences();
+    const beforeIds = new Set((beforeSeqs || []).map((s) => s.guid));
+
+    await project.executeTransaction((tx) => {
+      const action = templateSeq.createCloneAction();
+      if (action) tx.addAction(action);
+    });
+
+    const afterSeqs = await project.getSequences();
+    const clone = (afterSeqs || []).find((s) => !beforeIds.has(s.guid));
+    if (!clone) throw new Error("clone not found after createCloneAction");
+
+    // Rename the clone to the desired sequenceName.
+    try {
+      const pi = await clone.getProjectItem();
+      if (pi) {
+        await project.executeTransaction((tx) => {
+          tx.addAction(pi.createSetNameAction(sequenceName));
+        });
+      }
+    } catch (e) {
+      // Rename failure is non-fatal but surfaced so the caller can detect it.
+      throw new Error(`rename of clone failed: ${String((e && e.message) || e)}`);
+    }
+
+    setStage("clearTemplateClips");
+    await clearAllClips(project, clone);
+    seq = clone;
+  } else {
+    // createSequenceFromMedia inherits the source's fps/frame size (a preset
+    // guess from createSequence would not), then we empty the timeline.
+    setStage("createSequence");
+    seq = await project.createSequenceFromMedia(sequenceName, [sourceItem]);
+    if (!seq) throw new Error("createSequenceFromMedia returned nothing");
+    setStage("clearInitialClips");
+    await clearAllClips(project, seq);
+  }
+
+  return placeClips({ project, seq, sourceItem, clips, startIndex: 0, timelineStartSec: 0, setStage });
+}
+
+async function placeClips({ project, seq, sourceItem, clips, startIndex, timelineStartSec, setStage }) {
   setStage("activateSequence");
   try {
     await project.setActiveSequence(seq);
@@ -200,23 +302,29 @@ async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite }, 
   const audioTrackCount = await seq.getAudioTrackCount();
 
   const placements = [];
-  let timelinePos = 0;
+  let timelinePos = timelineStartSec;
 
-  for (let i = 0; i < clips.length; i++) {
+  // Running counts replace the per-clip "before" listing: five instrumented
+  // runs showed the UXP runtime dying under call burst (every fast run died,
+  // the one slow run survived), so each track is listed once per clip, not
+  // twice, and the loop is paced (see PLACEMENT_PACE_MS below).
+  setStage("initialTrackCounts");
+  let vCountBefore = (((await (await seq.getVideoTrack(0)).getTrackItems(1, false)) || [])).length;
+  const aCountsBefore = [];
+  for (let ai = 0; ai < audioTrackCount; ai++) {
+    const track = await seq.getAudioTrack(ai);
+    aCountsBefore[ai] = ((await track.getTrackItems(1, false)) || []).length;
+  }
+
+  const PLACEMENT_PACE_MS = 120;
+
+  for (let i = startIndex; i < clips.length; i++) {
     const clip = clips[i];
     const duration = clip.end - clip.start;
     if (duration <= 0) continue;
     setStage(`placeClip ${i + 1}/${clips.length}`);
 
-    // snapshot counts so the freshly placed items can be found by index delta
     const vTrack0 = await seq.getVideoTrack(0);
-    const vCountBefore = ((await vTrack0.getTrackItems(1, false)) || []).length;
-    const aCountsBefore = [];
-    for (let ai = 0; ai < audioTrackCount; ai++) {
-      const track = await seq.getAudioTrack(ai);
-      aCountsBefore[ai] = ((await track.getTrackItems(1, false)) || []).length;
-    }
-
     const insertTime = ppro.TickTime.createWithSeconds(timelinePos);
     await project.lockedAccess(() => {
       project.executeTransaction((tx) => {
@@ -224,7 +332,7 @@ async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite }, 
       });
     });
 
-    // locate the new video item (index delta, position fallback)
+    // locate the new video item (index delta vs running count, position fallback)
     const vItems = (await vTrack0.getTrackItems(1, false)) || [];
     let vClip = null;
     if (vItems.length > vCountBefore) {
@@ -238,6 +346,7 @@ async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite }, 
         }
       }
     }
+    vCountBefore = vItems.length;
 
     // the overwrite can spawn audio items on several tracks (lesson L086) —
     // every one of them must be trimmed and moved, not just A1
@@ -256,6 +365,7 @@ async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite }, 
           }
         }
       }
+      aCountsBefore[ai] = items.length;
     }
     if (!vClip && aClips.length === 0) {
       throw new Error(`clip ${i}: nothing found on the timeline after overwrite`);
@@ -315,6 +425,11 @@ async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite }, 
     });
 
     timelinePos += duration;
+
+    // Pace the loop: the surviving 1102-clip run averaged ~0.3-0.45s/clip
+    // (natural slowdown), every run faster than ~0.05s/clip killed the UXP
+    // runtime. 120ms keeps a wide margin and still finishes 1102 in ~2.5min.
+    await new Promise((resolve) => setTimeout(resolve, PLACEMENT_PACE_MS));
   }
 
   // final track inventory for the caller's gap audit
@@ -339,6 +454,7 @@ async function sequenceCutStaged({ mediaPath, sequenceName, clips, overwrite }, 
 
   return {
     sequenceName: seq.name,
+    startIndex,
     placedCount: placements.length,
     requestedCount: clips.length,
     sequenceEndSec: (await seq.getEndTime()).seconds,

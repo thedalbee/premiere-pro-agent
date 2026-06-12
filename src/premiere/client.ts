@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import http from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const CONTROL_URL = "http://127.0.0.1:7201";
@@ -71,18 +72,41 @@ export async function ensureDaemon(): Promise<DaemonHealth> {
   throw new Error("daemon did not start within 10s — run `ppro doctor` to diagnose");
 }
 
+// node:http instead of fetch: undici's default headersTimeout (300s) kills
+// long-running actions (a 1000-clip cut holds the response open for 20+ min).
+function postRpc(body: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      `${CONTROL_URL}/rpc`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let text = "";
+        res.on("data", (chunk) => {
+          text += chunk;
+        });
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 export async function callPremiere(
   action: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
 ): Promise<unknown> {
   await ensureDaemon();
-  const res = await fetch(`${CONTROL_URL}/rpc`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action, params, timeout: timeoutMs }),
-  });
-  const payload = (await res.json()) as { ok: boolean; data?: unknown; error?: string };
+  const res = await postRpc(JSON.stringify({ action, params, timeout: timeoutMs }));
+  const payload = JSON.parse(res.text) as { ok: boolean; data?: unknown; error?: string };
   if (res.status === 502) {
     throw new PluginNotConnectedError();
   }
