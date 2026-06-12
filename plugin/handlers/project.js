@@ -33,6 +33,14 @@ async function projectInfo() {
   };
 }
 
+async function projectSave() {
+  const project = await ppro.Project.getActiveProject();
+  if (!project) throw new Error("no project open in Premiere");
+  await project.save();
+  return { saved: true, path: project.path };
+}
+
 module.exports = {
   "project.info": projectInfo,
+  "project.save": projectSave,
 };

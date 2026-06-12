@@ -9,9 +9,9 @@ import {
   type Transcript,
   cleanupTempAudio,
   extractAudio,
-  mediaDurationSec,
   transcribe,
 } from "../transcription/whisper.js";
+import { mediaDurationSec } from "../audio/probe.js";
 
 const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"]);
 

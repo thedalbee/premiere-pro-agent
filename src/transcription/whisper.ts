@@ -115,19 +115,6 @@ export function transcribe(
   });
 }
 
-export async function mediaDurationSec(inputPath: string): Promise<number> {
-  const { stdout } = await run("ffprobe", [
-    "-v",
-    "error",
-    "-show_entries",
-    "format=duration",
-    "-of",
-    "default=noprint_wrappers=1:nokey=1",
-    inputPath,
-  ]);
-  return Number.parseFloat(stdout.trim());
-}
-
 export function cleanupTempAudio(wavPath: string): void {
   try {
     fs.unlinkSync(wavPath);

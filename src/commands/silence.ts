@@ -5,7 +5,7 @@ import type { Command } from "../cli.js";
 import { EXIT, type ExitCode } from "../output/exit-codes.js";
 import { note, printJson, sanitizePath } from "../output/print.js";
 import { DEFAULT_SETTINGS, detectSilence } from "../audio/silence.js";
-import { mediaDurationSec } from "../transcription/whisper.js";
+import { mediaDurationSec } from "../audio/probe.js";
 
 async function runSilence(argv: string[]): Promise<ExitCode> {
   const { values, positionals } = parseArgs({
