@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        font-family: -apple-system, "Segoe UI", sans-serif;
+        background: #1f1f1f;
+        color: #d6d6d6;
+        margin: 0;
+        padding: 14px;
+        font-size: 12px;
+      }
+      h1 {
+        font-size: 13px;
+        margin: 0 0 10px;
+        color: #ffffff;
+      }
+      #status {
+        padding: 6px 8px;
+        border-radius: 4px;
+        background: #333;
+        margin-bottom: 8px;
+      }
+      #status.connected { background: #1e4620; color: #9fe2a4; }
+      #status.disconnected { background: #4a2323; color: #f0a8a8; }
+      #log { color: #8a8a8a; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>Premiere Pro Agent</h1>
+    <div id="status">starting…</div>
+    <div id="log"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

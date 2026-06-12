@@ -1,0 +1,39 @@
+{
+  "id": "com.premiere-pro-agent.bridge",
+  "name": "Premiere Pro Agent",
+  "version": "0.1.0",
+  "manifestVersion": 6,
+  "main": "index.html",
+  "host": [
+    {
+      "app": "premierepro",
+      "minVersion": "25.0",
+      "dependencies": {
+        "dvascripting": "",
+        "MZ.Scripting": "",
+        "dvatranscription": "",
+        "mediaFoundation": "",
+        "MediaCore.SpeechToText": "",
+        "sDMEvent": ""
+      }
+    }
+  ],
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "ppro-agent-panel",
+      "label": { "default": "Premiere Pro Agent" },
+      "minimumSize": { "width": 260, "height": 160 },
+      "preferredDockedSize": { "width": 300, "height": 220 }
+    }
+  ],
+  "featureFlags": {
+    "allowFocusOnClickForPanels": true
+  },
+  "requiredPermissions": {
+    "localFileSystem": "fullAccess",
+    "network": {
+      "domains": ["localhost", "ws://localhost", "127.0.0.1", "ws://127.0.0.1"]
+    }
+  }
+}
