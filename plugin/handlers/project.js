@@ -48,8 +48,37 @@ async function projectImport({ paths }) {
   return { imported: ok !== false, paths };
 }
 
+async function projectClose({ saveFirst = false } = {}) {
+  const project = await ppro.Project.getActiveProject();
+  if (!project) return { closed: false, reason: "no project open" };
+  const projectPath = project.path;
+  const projectName = project.name;
+  if (saveFirst) {
+    await project.save();
+  }
+  // CloseProjectOptions: promptIfDirty=false so we don't get a dialog
+  const opts = new ppro.CloseProjectOptions();
+  opts.setPromptIfDirty(false);
+  opts.setSaveWorkspace(false);
+  const ok = await ppro.Project.close(opts);
+  return { closed: ok !== false, path: projectPath, name: projectName };
+}
+
+async function projectOpen({ path: filePath }) {
+  if (!filePath) throw new Error("path is required");
+  const opts = new ppro.OpenProjectOptions();
+  opts.setShowLocateFileDialog(false);
+  opts.setShowConvertProjectDialog(false);
+  opts.setShowWarningDialog(false);
+  const project = await ppro.Project.open(filePath, opts);
+  if (!project) throw new Error(`failed to open project: ${filePath}`);
+  return { opened: true, name: project.name, path: project.path };
+}
+
 module.exports = {
   "project.info": projectInfo,
   "project.save": projectSave,
   "project.import": projectImport,
+  "project.close": projectClose,
+  "project.open": projectOpen,
 };
