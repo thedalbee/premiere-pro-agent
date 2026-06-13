@@ -1,0 +1,69 @@
+name: release
+
+# Tag a version (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to:
+#   1. build + test
+#   2. package the UXP panel into a .ccx
+#   3. publish a GitHub Release with the .ccx and its SHA-256 checksum
+#   4. publish to npm with provenance (a signed, verifiable build attestation)
+#
+# Requires one repo secret: NPM_TOKEN (an npm automation token).
+# GITHUB_TOKEN is provided automatically.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # npm provenance attestation
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build and test
+        run: |
+          npm run build
+          node --test
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match package.json version $PKG"
+            exit 1
+          fi
+
+      - name: Package the UXP panel (.ccx)
+        id: pack
+        run: |
+          CCX="$(node scripts/package-plugin.mjs | tail -1)"
+          echo "ccx=$CCX" >> "$GITHUB_OUTPUT"
+          sha256sum "$CCX" | tee "$CCX.sha256"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "${{ steps.pack.outputs.ccx }}" \
+            "${{ steps.pack.outputs.ccx }}.sha256"
+
+      - name: Publish to npm (with provenance)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
