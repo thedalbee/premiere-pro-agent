@@ -149,6 +149,67 @@ test(
   },
 );
 
+// ── empty-template (donor fallback) fixture ───────────────────────────────
+// CUT_TEMPLATE has zero clips (track mixer settings only — its intended use);
+// I45_CLI_CUT in the same project holds 1,102 clips of the same media that
+// serve as the donor chain.
+const FIXTURE_FULL = "/tmp/prproj_lab/I45_FULL_INJECT.prproj";
+
+test(
+  "injectClips: empty CUT_TEMPLATE + donor clip elsewhere → validation passes",
+  { skip: !fs.existsSync(FIXTURE_FULL) },
+  async (t) => {
+    const tmpProj = FIXTURE_FULL + ".donor-test-" + process.pid + ".prproj";
+    fs.copyFileSync(FIXTURE_FULL, tmpProj);
+    t.after(() => {
+      for (const p of [tmpProj, tmpProj + ".bak", tmpProj + ".inject-debug.json"]) {
+        try { fs.unlinkSync(p); } catch { /* ignore */ }
+      }
+    });
+
+    const clips = [
+      { start: 1.0, end: 2.5 },
+      { start: 4.0, end: 6.0 },
+    ];
+
+    const result = await injectClips({
+      prprojPath: tmpProj,
+      templateSequenceName: "CUT_TEMPLATE",
+      newSequenceName: "DONOR_TEST_SEQ",
+      mediaPath: FIXTURE_MEDIA,
+      clips,
+    });
+
+    assert.equal(result.clipsInjected, 2);
+    const val = result.validation;
+    assert.equal(val.videoTrackItemCount, 2, `V1 items — errors: ${val.errors.join(", ")}`);
+    assert.equal(val.audioTrackItemCount, 2);
+    assert.equal(val.allRefsResolved, true);
+    assert.equal(val.passed, true, `validation should pass — errors: ${val.errors.join(", ")}`);
+
+    const outXml = gunzipFixture(tmpProj);
+    assert.ok(outXml.includes("DONOR_TEST_SEQ"));
+  },
+);
+
+test(
+  "injectClips: media absent from project → clear error before donor search",
+  { skip: !fs.existsSync(FIXTURE_FULL) },
+  async () => {
+    await assert.rejects(
+      () =>
+        injectClips({
+          prprojPath: FIXTURE_FULL,
+          templateSequenceName: "CUT_TEMPLATE",
+          newSequenceName: "X",
+          mediaPath: "definitely-not-in-project.mov",
+          clips: [{ start: 0, end: 1 }],
+        }),
+      /not found in project|no donor/i,
+    );
+  },
+);
+
 test(
   "injectClips: throws if template sequence not found",
   { skip: !fixtureAvailable() },

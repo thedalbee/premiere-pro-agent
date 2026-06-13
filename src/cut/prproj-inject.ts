@@ -314,18 +314,21 @@ function enqueueChildren(
 // ── clip injection ─────────────────────────────────────────────────────────
 
 /**
- * Find VideoMediaSource and AudioMediaSource ObjectIDs for a media path.
+ * Find ALL VideoMediaSource and AudioMediaSource ObjectIDs for a media path.
  *
  * Strategy: find the <Media> element(s) whose <FilePath> or <Title> matches
- * the given path or basename, collect their ObjectUIDs, then find
- * VideoMediaSource / AudioMediaSource that reference those Media UIDs.
+ * the given path or basename, collect their ObjectUIDs, then find every
+ * VideoMediaSource / AudioMediaSource that references those Media UIDs.
  *
- * Returns { videoSourceId: null, audioSourceId: null } if not found.
+ * A single media file can have several source objects in one project (e.g.
+ * re-imports, conform variants) — clips may reference any of them, so callers
+ * must treat the whole set as valid (the I45 project has both 253 and 272
+ * for the same .mp4).
  */
 function findMediaSourceIds(
   xml: string,
   mediaPath: string,
-): { videoSourceId: number | null; audioSourceId: number | null } {
+): { videoSourceIds: number[]; audioSourceIds: number[] } {
   const baseName = path.basename(mediaPath);
   const absPath = mediaPath.includes("/") ? mediaPath : null;
 
@@ -350,34 +353,32 @@ function findMediaSourceIds(
   }
 
   if (matchedMediaUids.size === 0) {
-    return { videoSourceId: null, audioSourceId: null };
+    return { videoSourceIds: [], audioSourceIds: [] };
   }
 
-  // Find VideoMediaSource and AudioMediaSource that reference any of those Media UIDs
-  let videoSourceId: number | null = null;
-  let audioSourceId: number | null = null;
+  // Collect every VideoMediaSource / AudioMediaSource that references any of
+  // those Media UIDs. Single block-bounded pass (no cross-block regex).
+  const videoSourceIds: number[] = [];
+  const audioSourceIds: number[] = [];
 
-  for (const uid of matchedMediaUids) {
-    if (videoSourceId === null) {
-      const vPat = new RegExp(
-        `VideoMediaSource ObjectID="(\\d+)"[^>]*>[\\s\\S]*?Media ObjectURef="${uid}"[\\s\\S]*?</VideoMediaSource>`,
-        "s",
-      );
-      const vm = vPat.exec(xml);
-      if (vm) videoSourceId = parseInt(vm[1], 10);
+  for (const m of xml.matchAll(
+    /<VideoMediaSource ObjectID="(\d+)"[^>]*>[\s\S]*?<\/VideoMediaSource>/g,
+  )) {
+    const uidMatch = /Media ObjectURef="([0-9a-f-]{36})"/.exec(m[0]);
+    if (uidMatch && matchedMediaUids.has(uidMatch[1])) {
+      videoSourceIds.push(parseInt(m[1], 10));
     }
-    if (audioSourceId === null) {
-      const aPat = new RegExp(
-        `AudioMediaSource ObjectID="(\\d+)"[^>]*>[\\s\\S]*?Media ObjectURef="${uid}"[\\s\\S]*?</AudioMediaSource>`,
-        "s",
-      );
-      const am = aPat.exec(xml);
-      if (am) audioSourceId = parseInt(am[1], 10);
+  }
+  for (const m of xml.matchAll(
+    /<AudioMediaSource ObjectID="(\d+)"[^>]*>[\s\S]*?<\/AudioMediaSource>/g,
+  )) {
+    const uidMatch = /Media ObjectURef="([0-9a-f-]{36})"/.exec(m[0]);
+    if (uidMatch && matchedMediaUids.has(uidMatch[1])) {
+      audioSourceIds.push(parseInt(m[1], 10));
     }
-    if (videoSourceId !== null && audioSourceId !== null) break;
   }
 
-  return { videoSourceId, audioSourceId };
+  return { videoSourceIds, audioSourceIds };
 }
 
 function escapeRegex(str: string): string {
@@ -400,17 +401,22 @@ function findSharedMarkerOwnerId(xml: string, seqUid: string): number | null {
 interface TemplateClipIds {
   videoTrackItemId: number;
   videoComponentChainId: number;
-  videoFilterComponentId: number;
+  // null when the chain is Premiere's native default stub (DefaultMotion /
+  // DefaultOpacity flags, empty ComponentChain) — the common case for clips
+  // placed by the editor or the UXP API. The full filter chain only appears
+  // on FCP-XML-imported clips.
+  videoFilterComponentId: number | null;
   videoFilterParamIds: number[];
   videoSubClipId: number;
   videoClipId: number;
   audioTrackItemId: number;
   audioComponentChainId: number;
-  audioFilterComponentId: number;
+  audioFilterComponentId: number | null;
   audioFilterParamIds: number[];
   audioSubClipId: number;
   audioClipId: number;
-  secondaryContentId: number;
+  // stereo clips carry 2 secondary content items; mono 1; may be absent
+  secondaryContentIds: number[];
   videoMediaSourceId: number;
   audioMediaSourceId: number;
   markerOwnerId: number;
@@ -419,6 +425,8 @@ interface TemplateClipIds {
 /**
  * Extract template clip IDs from an existing VideoClipTrackItem + AudioClipTrackItem pair.
  * Reads from the last (highest-index) pair in the given track item lists.
+ * Returns null if either track is empty (e.g. a pure-settings CUT_TEMPLATE) —
+ * callers should then fall back to findDonorClipIds().
  */
 function extractTemplateClipIds(
   xml: string,
@@ -442,6 +450,98 @@ function extractTemplateClipIds(
   if (aItemRefs.length === 0) return null;
   const lastAItemId = aItemRefs[aItemRefs.length - 1];
 
+  return resolveClipChain(xml, lastVItemId, lastAItemId);
+}
+
+/**
+ * Donor search: when the template sequence has no clips (a pure track-settings
+ * template, which is the intended use of CUT_TEMPLATE), find any clip of the
+ * target media elsewhere in the project and use its object chain as the donor.
+ *
+ * Walks every VideoClipTrackItem in the file, follows SubClip→VideoClip→Source
+ * and picks the first one whose Source matches videoSourceId. Audio likewise.
+ */
+function findDonorClipIds(
+  xml: string,
+  videoSourceIds: ReadonlySet<number>,
+  audioSourceIds: ReadonlySet<number>,
+): { vItemId: number; aItemId: number } | null {
+  let vItemId: number | null = null;
+  let aItemId: number | null = null;
+
+  // Pre-index: SubClip id → Clip ObjectRef, and VideoClip/AudioClip id → Source ObjectRef.
+  // One pass each instead of per-candidate full-file regex scans (file is ~15MB).
+  const subClipToClip = new Map<number, number>();
+  for (const m of xml.matchAll(
+    /<SubClip ObjectID="(\d+)"[^>]*>\s*<Clip ObjectRef="(\d+)"\/>/g,
+  )) {
+    subClipToClip.set(parseInt(m[1], 10), parseInt(m[2], 10));
+  }
+
+  const clipToSource = new Map<number, number>();
+  for (const m of xml.matchAll(
+    /<(?:VideoClip|AudioClip) ObjectID="(\d+)"[^>]*>[\s\S]{0,400}?<Source ObjectRef="(\d+)"\/>/g,
+  )) {
+    clipToSource.set(parseInt(m[1], 10), parseInt(m[2], 10));
+  }
+
+  // Video donor: first VideoClipTrackItem whose chain resolves to a matching
+  // source. Prefer items without transitions — transition objects are not part
+  // of the cloned chain and head/tail refs would dangle.
+  let vFallback: number | null = null;
+  for (const m of xml.matchAll(
+    /<VideoClipTrackItem ObjectID="(\d+)"[^>]*>([\s\S]*?)<\/VideoClipTrackItem>/g,
+  )) {
+    const body = m[2];
+    const subRef = /<SubClip ObjectRef="(\d+)"\/>/.exec(body);
+    if (!subRef) continue;
+    const clipId = subClipToClip.get(parseInt(subRef[1], 10));
+    if (clipId === undefined) continue;
+    const src = clipToSource.get(clipId);
+    if (src === undefined || !videoSourceIds.has(src)) continue;
+    if (body.includes("Transition")) {
+      vFallback ??= parseInt(m[1], 10);
+      continue;
+    }
+    vItemId = parseInt(m[1], 10);
+    break;
+  }
+  vItemId ??= vFallback;
+
+  // Audio donor: same, preferring transition-free items
+  let aFallback: number | null = null;
+  for (const m of xml.matchAll(
+    /<AudioClipTrackItem ObjectID="(\d+)"[^>]*>([\s\S]*?)<\/AudioClipTrackItem>/g,
+  )) {
+    const body = m[2];
+    const subRef = /<SubClip ObjectRef="(\d+)"\/>/.exec(body);
+    if (!subRef) continue;
+    const clipId = subClipToClip.get(parseInt(subRef[1], 10));
+    if (clipId === undefined) continue;
+    const src = clipToSource.get(clipId);
+    if (src === undefined || !audioSourceIds.has(src)) continue;
+    if (body.includes("Transition")) {
+      aFallback ??= parseInt(m[1], 10);
+      continue;
+    }
+    aItemId = parseInt(m[1], 10);
+    break;
+  }
+  aItemId ??= aFallback;
+
+  if (vItemId === null || aItemId === null) return null;
+  return { vItemId, aItemId };
+}
+
+/**
+ * Resolve the full 24-object clip chain starting from a
+ * VideoClipTrackItem + AudioClipTrackItem pair.
+ */
+function resolveClipChain(
+  xml: string,
+  lastVItemId: number,
+  lastAItemId: number,
+): TemplateClipIds | null {
   // Parse VideoClipTrackItem
   const vItemBlock = extractElement(xml, "VideoClipTrackItem", lastVItemId);
   if (!vItemBlock) return null;
@@ -451,18 +551,22 @@ function extractTemplateClipIds(
   const videoComponentChainId = parseInt(vChainRef[1], 10);
   const videoSubClipId = parseInt(vSubClipRef[1], 10);
 
-  // Parse VideoComponentChain → VideoFilterComponent → params
+  // Parse VideoComponentChain → VideoFilterComponent → params.
+  // Native clips use a default stub chain (DefaultMotion, empty ComponentChain)
+  // with no Component refs — that shape is valid and clones as-is.
   const vChainBlock = extractElement(xml, "VideoComponentChain", videoComponentChainId);
   if (!vChainBlock) return null;
   const vFilterRef = /Component Index="0" ObjectRef="(\d+)"/.exec(vChainBlock);
-  if (!vFilterRef) return null;
-  const videoFilterComponentId = parseInt(vFilterRef[1], 10);
-
-  const vFilterBlock = extractElement(xml, "VideoFilterComponent", videoFilterComponentId);
-  if (!vFilterBlock) return null;
-  const vParamRefs = [...vFilterBlock.matchAll(/Param Index="\d+" ObjectRef="(\d+)"/g)].map((m) =>
-    parseInt(m[1], 10),
-  );
+  let videoFilterComponentId: number | null = null;
+  let vParamRefs: number[] = [];
+  if (vFilterRef) {
+    videoFilterComponentId = parseInt(vFilterRef[1], 10);
+    const vFilterBlock = extractElement(xml, "VideoFilterComponent", videoFilterComponentId);
+    if (!vFilterBlock) return null;
+    vParamRefs = [...vFilterBlock.matchAll(/Param Index="\d+" ObjectRef="(\d+)"/g)].map((m) =>
+      parseInt(m[1], 10),
+    );
+  }
 
   // Parse SubClip → VideoClip
   const vSubClipBlock = extractElement(xml, "SubClip", videoSubClipId);
@@ -489,18 +593,20 @@ function extractTemplateClipIds(
   const audioComponentChainId = parseInt(aChainRef[1], 10);
   const audioSubClipId = parseInt(aSubClipRef[1], 10);
 
-  // AudioComponentChain → AudioFilterComponent → params
+  // AudioComponentChain → AudioFilterComponent → params (stub chains allowed)
   const aChainBlock = extractElement(xml, "AudioComponentChain", audioComponentChainId);
   if (!aChainBlock) return null;
   const aFilterRef = /Component Index="0" ObjectRef="(\d+)"/.exec(aChainBlock);
-  if (!aFilterRef) return null;
-  const audioFilterComponentId = parseInt(aFilterRef[1], 10);
-
-  const aFilterBlock = extractElement(xml, "AudioFilterComponent", audioFilterComponentId);
-  if (!aFilterBlock) return null;
-  const aParamRefs = [...aFilterBlock.matchAll(/Param Index="\d+" ObjectRef="(\d+)"/g)].map((m) =>
-    parseInt(m[1], 10),
-  );
+  let audioFilterComponentId: number | null = null;
+  let aParamRefs: number[] = [];
+  if (aFilterRef) {
+    audioFilterComponentId = parseInt(aFilterRef[1], 10);
+    const aFilterBlock = extractElement(xml, "AudioFilterComponent", audioFilterComponentId);
+    if (!aFilterBlock) return null;
+    aParamRefs = [...aFilterBlock.matchAll(/Param Index="\d+" ObjectRef="(\d+)"/g)].map((m) =>
+      parseInt(m[1], 10),
+    );
+  }
 
   // AudioSubClip → AudioClip
   const aSubClipBlock = extractElement(xml, "SubClip", audioSubClipId);
@@ -515,9 +621,10 @@ function extractTemplateClipIds(
   const aSrcRef = /Source ObjectRef="(\d+)"/.exec(aClipBlock);
   if (!aSrcRef) return null;
   const audioMediaSourceId = parseInt(aSrcRef[1], 10);
-  const secContentItemRef = /SecondaryContentItem Index="0" ObjectRef="(\d+)"/.exec(aClipBlock);
-  if (!secContentItemRef) return null;
-  const secondaryContentId = parseInt(secContentItemRef[1], 10);
+  // 0..N secondary content items (stereo native clips carry 2, mono 1)
+  const secondaryContentIds = [
+    ...aClipBlock.matchAll(/SecondaryContentItem Index="\d+" ObjectRef="(\d+)"/g),
+  ].map((m) => parseInt(m[1], 10));
 
   return {
     videoTrackItemId: lastVItemId,
@@ -532,7 +639,7 @@ function extractTemplateClipIds(
     audioFilterParamIds: aParamRefs,
     audioSubClipId,
     audioClipId,
-    secondaryContentId,
+    secondaryContentIds,
     videoMediaSourceId,
     audioMediaSourceId,
     markerOwnerId,
@@ -636,26 +743,47 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
   if (!a1TrackUidMatch) throw new Error("A1 track ObjectURef not found in AudioTrackGroup");
   const a1TrackUid = a1TrackUidMatch[1];
 
-  // ── 4. Extract template clip IDs ─────────────────────────────────────────
-  const tmplClip = extractTemplateClipIds(xml, v1TrackUid, a1TrackUid);
-  if (!tmplClip) throw new Error("Could not extract template clip object IDs");
-
-  // ── 5. Verify media is already imported ──────────────────────────────────
-  const { videoSourceId, audioSourceId } = findMediaSourceIds(xml, mediaPath);
-  if (videoSourceId === null || audioSourceId === null) {
+  // ── 4. Verify media is already imported ──────────────────────────────────
+  // (before clip-chain extraction: the donor fallback needs the source IDs)
+  const { videoSourceIds, audioSourceIds } = findMediaSourceIds(xml, mediaPath);
+  if (videoSourceIds.length === 0 || audioSourceIds.length === 0) {
     throw new Error(
       `Media "${path.basename(mediaPath)}" not found in project. ` +
         `Import it into Premiere first, then run this command.`,
     );
   }
-  // Verify the template clip uses the same source (cross-check)
-  if (
-    tmplClip.videoMediaSourceId !== videoSourceId ||
-    tmplClip.audioMediaSourceId !== audioSourceId
-  ) {
-    // Different source — still OK, we override the source refs when building clips
-    // but we need to know the correct media source IDs (which we already have)
+  const videoSourceIdSet = new Set(videoSourceIds);
+  const audioSourceIdSet = new Set(audioSourceIds);
+
+  // ── 5. Extract template clip IDs ─────────────────────────────────────────
+  // Primary: last clip pair on the template's own V1/A1 tracks.
+  // Fallback: the template may be a pure track-settings sequence with zero
+  // clips (the intended CUT_TEMPLATE shape) — find a donor clip of the same
+  // media anywhere else in the project.
+  let tmplClip = extractTemplateClipIds(xml, v1TrackUid, a1TrackUid);
+  if (!tmplClip) {
+    const donor = findDonorClipIds(xml, videoSourceIdSet, audioSourceIdSet);
+    if (donor) {
+      tmplClip = resolveClipChain(xml, donor.vItemId, donor.aItemId);
+    }
   }
+  if (!tmplClip) {
+    throw new Error(
+      `Template sequence "${templateSequenceName}" has no clips and no donor clip ` +
+        `of media "${path.basename(mediaPath)}" exists in the project. ` +
+        `Place at least one clip of this media in any sequence, or use --live.`,
+    );
+  }
+
+  // Pick the concrete source pair for the new clips: prefer the sources the
+  // template/donor clip already uses (guaranteed consistent chain); otherwise
+  // the first source pair of the requested media.
+  const videoSourceId = videoSourceIdSet.has(tmplClip.videoMediaSourceId)
+    ? tmplClip.videoMediaSourceId
+    : videoSourceIds[0];
+  const audioSourceId = audioSourceIdSet.has(tmplClip.audioMediaSourceId)
+    ? tmplClip.audioMediaSourceId
+    : audioSourceIds[0];
 
   // ── 6. Walk template sequence subgraph ────────────────────────────────────
   const { ids: tmplIds, uids: tmplUids } = walkSequenceSubgraph(xml, templateSeqUid);
@@ -664,7 +792,8 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
   const existingIds = collectAllObjectIds(xml);
   // start from max+1 in the *full* xml scope, but we also need to track IDs we
   // allocate within this run to avoid collisions in batch allocation
-  let nextId = maxObjectId(xml) + 1;
+  const firstNewId = maxObjectId(xml) + 1;
+  let nextId = firstNewId;
 
   const seqIdMap = new Map<number, number>();
   const seqUidMap = new Map<string, string>();
@@ -740,21 +869,23 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
     const timelineEnd = timelineCursor + durationTicks;
     timelineCursor = timelineEnd;
 
-    // Allocate IDs for this clip's 24 objects
+    // Allocate IDs for this clip's objects.
+    // Full chain (FCP-XML shape) = 24 objects; native default-stub chain has
+    // no filter components/params, so the per-clip count varies.
     const newVItemId = nextId++;
     const newVChainId = nextId++;
-    const newVFilterId = nextId++;
+    const newVFilterId = tmplClip.videoFilterComponentId !== null ? nextId++ : null;
     const newVParamIds = tmplClip.videoFilterParamIds.map(() => nextId++);
     const newVSubClipId = nextId++;
     const newVClipId = nextId++;
 
     const newAItemId = nextId++;
     const newAChainId = nextId++;
-    const newAFilterId = nextId++;
+    const newAFilterId = tmplClip.audioFilterComponentId !== null ? nextId++ : null;
     const newAParamIds = tmplClip.audioFilterParamIds.map(() => nextId++);
     const newASubClipId = nextId++;
     const newAClipId = nextId++;
-    const newSecContentId = nextId++;
+    const newSecContentIds = tmplClip.secondaryContentIds.map(() => nextId++);
 
     vTrackItemIds.push(newVItemId);
     aTrackItemIds.push(newAItemId);
@@ -763,17 +894,21 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
     const clipIdMap = new Map<number, number>([
       [tmplClip.videoTrackItemId, newVItemId],
       [tmplClip.videoComponentChainId, newVChainId],
-      [tmplClip.videoFilterComponentId, newVFilterId],
+      ...(tmplClip.videoFilterComponentId !== null
+        ? [[tmplClip.videoFilterComponentId, newVFilterId!] as [number, number]]
+        : []),
       ...tmplClip.videoFilterParamIds.map((id, j): [number, number] => [id, newVParamIds[j]]),
       [tmplClip.videoSubClipId, newVSubClipId],
       [tmplClip.videoClipId, newVClipId],
       [tmplClip.audioTrackItemId, newAItemId],
       [tmplClip.audioComponentChainId, newAChainId],
-      [tmplClip.audioFilterComponentId, newAFilterId],
+      ...(tmplClip.audioFilterComponentId !== null
+        ? [[tmplClip.audioFilterComponentId, newAFilterId!] as [number, number]]
+        : []),
       ...tmplClip.audioFilterParamIds.map((id, j): [number, number] => [id, newAParamIds[j]]),
       [tmplClip.audioSubClipId, newASubClipId],
       [tmplClip.audioClipId, newAClipId],
-      [tmplClip.secondaryContentId, newSecContentId],
+      ...tmplClip.secondaryContentIds.map((id, j): [number, number] => [id, newSecContentIds[j]]),
     ]);
 
     // We don't remap shared IDs (media sources, markers) — they stay the same
@@ -795,8 +930,17 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
       return remapped;
     };
 
+    // Donor items may carry transition refs — the transition objects are not
+    // part of the cloned chain, so keeping the refs would leave them dangling
+    // (or shared with the donor's actual transitions).
+    const stripTransitions = (block: string): string =>
+      block
+        .replace(/\s*<HeadTransition ObjectRef="\d+"\/>/g, "")
+        .replace(/\s*<TailTransition ObjectRef="\d+"\/>/g, "");
+
     // VideoClipTrackItem — update timeline Start/End
     let vItem = buildClipBlock("VideoClipTrackItem", tmplClip.videoTrackItemId);
+    vItem = stripTransitions(vItem);
     vItem = replaceTimelinePosition(vItem, timelineStart, timelineEnd);
 
     // VideoClip — update source InPoint/OutPoint + new ClipID
@@ -807,6 +951,7 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
 
     // AudioClipTrackItem — update timeline Start/End + new ID GUID
     let aItem = buildClipBlock("AudioClipTrackItem", tmplClip.audioTrackItemId);
+    aItem = stripTransitions(aItem);
     aItem = replaceTimelinePosition(aItem, timelineStart, timelineEnd);
     aItem = aItem.replace(/<ID>[0-9a-f-]{36}<\/ID>/, `<ID>${newGuid()}</ID>`);
 
@@ -817,13 +962,19 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
     aClip = aClip.replace(/<ClipID>[^<]+<\/ClipID>/, `<ClipID>${newGuid()}</ClipID>`);
 
     const vChain = buildClipBlock("VideoComponentChain", tmplClip.videoComponentChainId);
-    const vFilter = buildClipBlock("VideoFilterComponent", tmplClip.videoFilterComponentId);
     const vSubClip = buildClipBlock("SubClip", tmplClip.videoSubClipId);
     const aChain = buildClipBlock("AudioComponentChain", tmplClip.audioComponentChainId);
-    const aFilter = buildClipBlock("AudioFilterComponent", tmplClip.audioFilterComponentId);
     const aSubClip = buildClipBlock("SubClip", tmplClip.audioSubClipId);
-    const secContent = buildClipBlock("SecondaryContent", tmplClip.secondaryContentId);
-    secContent; // silence unused (included in aClip's SecondaryContents block via remapping)
+
+    // Filter components only exist on full (FCP-XML shape) chains
+    const vFilterBlocks =
+      tmplClip.videoFilterComponentId !== null
+        ? [buildClipBlock("VideoFilterComponent", tmplClip.videoFilterComponentId)]
+        : [];
+    const aFilterBlocks =
+      tmplClip.audioFilterComponentId !== null
+        ? [buildClipBlock("AudioFilterComponent", tmplClip.audioFilterComponentId)]
+        : [];
 
     const vFilterParams = tmplClip.videoFilterParamIds.map((id) => {
       const tag = tagForId(xml, id)!;
@@ -833,21 +984,24 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
       const tag = tagForId(xml, id)!;
       return buildClipBlock(tag, id);
     });
+    const secContentBlocks = tmplClip.secondaryContentIds.map((id) =>
+      buildClipBlock("SecondaryContent", id),
+    );
 
     clipBlocks.push(
       vItem,
       vChain,
-      vFilter,
+      ...vFilterBlocks,
       ...vFilterParams,
       vSubClip,
       vClip,
       aItem,
       aChain,
-      aFilter,
+      ...aFilterBlocks,
       ...aFilterParams,
       aSubClip,
       aClip,
-      buildClipBlock("SecondaryContent", tmplClip.secondaryContentId),
+      ...secContentBlocks,
     );
   }
 
@@ -859,21 +1013,29 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
     .map((id, i) => `\t\t\t\t\t<TrackItem Index="${i}" ObjectRef="${id}"/>`)
     .join("\n");
 
-  // Patch the cloned V1/A1 track blocks (they have empty TrackItems from step 8)
+  // Patch the cloned V1/A1 track blocks. Tracks that had clips have an
+  // emptied <TrackItems> from step 8; tracks that were ALWAYS empty (a pure
+  // settings template) have no <TrackItems> element at all — insert one as
+  // the first child of <ClipItems>.
+  const setTrackItems = (block: string, itemsXml: string): string => {
+    const filled = `<TrackItems Version="1">\n${itemsXml}\n\t\t\t\t</TrackItems>`;
+    if (/<TrackItems Version="1">[\s\S]*?<\/TrackItems>/.test(block)) {
+      return block.replace(/<TrackItems Version="1">[\s\S]*?<\/TrackItems>/, filled);
+    }
+    return block.replace(
+      /<ClipItems Version="3">/,
+      `<ClipItems Version="3">\n\t\t\t\t${filled}`,
+    );
+  };
+
   const seqCloneXml = seqCloneBlocks
     .map((block) => {
       // Identify cloned VideoClipTrack for new V1
       if (block.includes(`ObjectUID="${newV1TrackUid}"`)) {
-        return block.replace(
-          /<TrackItems Version="1">\s*<\/TrackItems>/,
-          `<TrackItems Version="1">\n${vTrackItemsXml}\n\t\t\t\t</TrackItems>`,
-        );
+        return setTrackItems(block, vTrackItemsXml);
       }
       if (block.includes(`ObjectUID="${newA1TrackUid}"`)) {
-        return block.replace(
-          /<TrackItems Version="1">\s*<\/TrackItems>/,
-          `<TrackItems Version="1">\n${aTrackItemsXml}\n\t\t\t\t</TrackItems>`,
-        );
+        return setTrackItems(block, aTrackItemsXml);
       }
       return block;
     })
@@ -1043,7 +1205,9 @@ export async function injectClips(options: InjectOptions): Promise<InjectResult>
     backupPath,
     debugPath,
     clipsInjected: clips.length,
-    objectsCreated: seqIdMap.size + seqUidMap.size + clips.length * 24 + 7,
+    // numeric-ID objects actually allocated + GUID objects (sequence clones,
+    // MasterClip, ClipProjectItem)
+    objectsCreated: nextId - firstNewId + seqUidMap.size + 2,
     validation,
   };
 }
