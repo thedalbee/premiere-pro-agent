@@ -13,7 +13,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test"
+    "test": "npm run build && node --test",
+    "package:plugin": "node scripts/package-plugin.mjs"
   },
   "keywords": [
     "premiere-pro",

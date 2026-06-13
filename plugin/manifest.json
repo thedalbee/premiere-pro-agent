@@ -4,20 +4,18 @@
   "version": "0.1.0",
   "manifestVersion": 6,
   "main": "index.html",
-  "host": [
-    {
-      "app": "premierepro",
-      "minVersion": "25.0",
-      "dependencies": {
-        "dvascripting": "",
-        "MZ.Scripting": "",
-        "dvatranscription": "",
-        "mediaFoundation": "",
-        "MediaCore.SpeechToText": "",
-        "sDMEvent": ""
-      }
+  "host": {
+    "app": "premierepro",
+    "minVersion": "25.0",
+    "dependencies": {
+      "dvascripting": "",
+      "MZ.Scripting": "",
+      "dvatranscription": "",
+      "mediaFoundation": "",
+      "MediaCore.SpeechToText": "",
+      "sDMEvent": ""
     }
-  ],
+  },
   "entrypoints": [
     {
       "type": "panel",
