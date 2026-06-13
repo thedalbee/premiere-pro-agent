@@ -34,20 +34,32 @@ function originLogPath(): string {
 }
 
 /**
- * Append EVERY upgrade attempt's Origin + decision to ~/.ppro/bridge-origins.log
- * (override with PPRO_BRIDGE_ORIGIN_LOG). This must record REJECTED attempts too
- * — if the real UXP client ever presents an http(s) origin it would be rejected
- * and never reach `connection`, so logging only accepted connections would hide
+ * Origin rejection is OBSERVE-ONLY by default: every upgrade is logged with the
+ * verdict, but nothing is actually blocked unless PPRO_ENFORCE_ORIGIN=1. This is
+ * deliberate — the real UXP client's Origin has not been observed yet, and if it
+ * turned out to be http(s) (unverifiable without opening Premiere), enforcing
+ * would silently brick the user's own plugin. Run once, read
+ * ~/.ppro/bridge-origins.log, confirm the UXP origin is non-http, THEN enforce.
+ */
+function enforceOrigin(): boolean {
+  return process.env.PPRO_ENFORCE_ORIGIN === "1";
+}
+
+/**
+ * Append EVERY upgrade attempt's Origin + verdict to ~/.ppro/bridge-origins.log
+ * (override with PPRO_BRIDGE_ORIGIN_LOG). Logs would-reject attempts too — that
+ * is the whole point in observe mode, and in enforce mode a rejected client
+ * never reaches `connection`, so logging only accepted connections would hide
  * exactly the failure we need to diagnose. The daemon is spawned with stdio
  * "ignore", so a file is the only durable sink. Best-effort: never throws.
  */
-function recordOrigin(origin: string | undefined, allowed: boolean): void {
+function recordOrigin(origin: string | undefined, allowed: boolean, enforced: boolean): void {
   try {
     const file = originLogPath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.appendFileSync(
       file,
-      `${new Date().toISOString()} origin=${origin ?? "<none>"} decision=${allowed ? "allow" : "reject"}\n`,
+      `${new Date().toISOString()} origin=${origin ?? "<none>"} verdict=${allowed ? "allow" : "reject"} enforced=${enforced}\n`,
     );
   } catch {
     /* logging is diagnostic only — never throw */
@@ -83,14 +95,15 @@ export class PluginBridge {
     const server = new WebSocketServer({
       host: "127.0.0.1",
       port,
-      // Reject browser web origins (DNS-rebinding / CSWSH). The native UXP
-      // client presents no http(s) web origin, so it is unaffected. Logging the
-      // decision here (not in `connection`) captures rejected attempts too, so a
-      // plugin blocked by this rule still leaves a diagnosable trail.
+      // Identify browser web origins (DNS-rebinding / CSWSH). Logging the verdict
+      // here (not in `connection`) captures would-reject attempts too. Observe-only
+      // unless PPRO_ENFORCE_ORIGIN=1, so an unverified UXP origin can never brick
+      // the plugin; the log reveals the real origin to enforce safely later.
       verifyClient: (info: { origin?: string }) => {
-        const allow = verifyOrigin(info.origin);
-        recordOrigin(info.origin, allow);
-        return allow;
+        const verdict = verifyOrigin(info.origin);
+        const enforce = enforceOrigin();
+        recordOrigin(info.origin, verdict, enforce);
+        return enforce ? verdict : true;
       },
     });
     this.server = server;

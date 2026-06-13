@@ -112,7 +112,7 @@ The daemon starts automatically on first use and manages a WebSocket bridge to t
 
 All communication stays on `127.0.0.1`. Nothing is sent to external servers:
 
-- **Localhost-only bridge.** The daemon binds to `127.0.0.1:7201` (control) and `127.0.0.1:7300` (plugin WebSocket) — it never listens on a public interface. The plugin bridge also **rejects browser web origins** (`http(s)://`), which blocks DNS-rebinding and cross-site WebSocket hijacking from a malicious page. (A daemon↔plugin token handshake is planned as additional hardening.)
+- **Localhost-only bridge.** The daemon binds to `127.0.0.1:7201` (control) and `127.0.0.1:7300` (plugin WebSocket) — it never listens on a public interface. The bridge logs the Origin of every WebSocket upgrade (`~/.ppro/bridge-origins.log`) and can **reject browser web origins** (`http(s)://`) — the defense against DNS-rebinding / cross-site WebSocket hijacking. It ships in observe-only mode (logs, does not block) so an unverified setup is never locked out; set `PPRO_ENFORCE_ORIGIN=1` to enforce once the log confirms your plugin's Origin is non-http. (A daemon↔plugin token handshake is planned as additional hardening.)
 - **No telemetry.** Zero usage data is collected. Stars and npm download counts are the only metrics tracked, and only by the platforms themselves.
 - **No API keys required.** Transcription runs locally via `mlx-whisper`. No cloud STT service is contacted.
 - **The maker cannot see your machine.** This tool has no remote-access surface. `ppro setup` is the only network-adjacent operation (it packages and installs a local `.ccx` file via Adobe's own installer — no download from this project's servers).

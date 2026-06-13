@@ -35,12 +35,10 @@ test("verifyOrigin: allows absent / native / app-scheme origins", () => {
 });
 
 // ── integration: real WS upgrade ─────────────────────────────────────────────
-const PORT = 20000 + Math.floor(Math.random() * 15000);
-
-function connect(origin) {
+function connect(port, origin) {
   return new Promise((resolve) => {
     const opts = origin === undefined ? {} : { origin };
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, opts);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, opts);
     let settled = false;
     const settle = (outcome) => {
       if (settled) return;
@@ -58,41 +56,37 @@ function connect(origin) {
   });
 }
 
-test("PluginBridge: http origin is rejected, no origin is accepted", async (t) => {
-  const bridge = new PluginBridge();
-  bridge.start(PORT);
-  t.after(() => bridge.stop());
-  // Give the server a moment to bind.
-  await new Promise((r) => setTimeout(r, 150));
-
-  assert.equal(await connect("http://evil.com"), "rejected", "browser origin must be rejected");
-  assert.equal(await connect(undefined), "open", "native client (no origin) must connect");
-});
-
-test("PluginBridge: a REJECTED upgrade is still logged (so a blocked plugin is diagnosable)", async (t) => {
+// One test owns the process-global env toggle so observe/enforce never race.
+test("PluginBridge: observe-by-default never blocks but logs would-reject; enforce blocks http", async (t) => {
   const logFile = path.join(os.tmpdir(), `ppro-origin-log-${process.pid}-${Date.now()}.log`);
-  const prev = process.env.PPRO_BRIDGE_ORIGIN_LOG;
+  const prevLog = process.env.PPRO_BRIDGE_ORIGIN_LOG;
+  const prevEnf = process.env.PPRO_ENFORCE_ORIGIN;
   process.env.PPRO_BRIDGE_ORIGIN_LOG = logFile;
   const port = 20000 + Math.floor(Math.random() * 15000);
   const bridge = new PluginBridge();
   bridge.start(port);
   t.after(() => {
     bridge.stop();
-    if (prev === undefined) delete process.env.PPRO_BRIDGE_ORIGIN_LOG;
-    else process.env.PPRO_BRIDGE_ORIGIN_LOG = prev;
+    if (prevLog === undefined) delete process.env.PPRO_BRIDGE_ORIGIN_LOG;
+    else process.env.PPRO_BRIDGE_ORIGIN_LOG = prevLog;
+    if (prevEnf === undefined) delete process.env.PPRO_ENFORCE_ORIGIN;
+    else process.env.PPRO_ENFORCE_ORIGIN = prevEnf;
     try { fs.unlinkSync(logFile); } catch { /* noop */ }
   });
   await new Promise((r) => setTimeout(r, 150));
 
-  await new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "https://evil.example" });
-    ws.on("error", () => { ws.on("error", () => {}); resolve(); });
-    ws.on("unexpected-response", () => { ws.on("error", () => {}); resolve(); });
-    ws.on("open", () => { ws.close(); resolve(); });
-    setTimeout(resolve, 2000);
-  });
+  // Observe (default): a browser origin still connects (not bricked) but is logged.
+  delete process.env.PPRO_ENFORCE_ORIGIN;
+  assert.equal(await connect(port, "https://evil.example"), "open", "observe mode must not block any origin");
   await new Promise((r) => setTimeout(r, 100)); // let the append flush
+  assert.match(
+    fs.readFileSync(logFile, "utf8"),
+    /origin=https:\/\/evil\.example verdict=reject enforced=false/,
+    "observe mode must log the would-reject verdict",
+  );
 
-  const log = fs.readFileSync(logFile, "utf8");
-  assert.match(log, /origin=https:\/\/evil\.example decision=reject/, "rejected origin must be logged");
+  // Enforce: the browser origin is now rejected; the native client (no origin) still connects.
+  process.env.PPRO_ENFORCE_ORIGIN = "1";
+  assert.equal(await connect(port, "http://evil.com"), "rejected", "enforce must reject browser origins");
+  assert.equal(await connect(port, undefined), "open", "native client (no origin) must connect");
 });
