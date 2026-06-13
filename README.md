@@ -1,16 +1,12 @@
 # premiere-pro-agent
 
 <p align="center">
-  <img src="assets/logo.png" alt="premiere-pro-agent logo" width="200" />
+  <video src="https://github.com/user-attachments/assets/a6377eda-b02f-4186-9d7c-46269457fb44" controls></video>
 </p>
 
 > CLI that lets AI agents edit your Adobe Premiere Pro timeline.
 
 `ppro` — one command to cut silence, build rough cuts, and verify timelines in Premiere Pro, driven by any AI agent (Claude Code, Codex, Cursor) or your own scripts.
-
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/a6377eda-b02f-4186-9d7c-46269457fb44" controls></video>
-</p>
 
 ## Why
 
