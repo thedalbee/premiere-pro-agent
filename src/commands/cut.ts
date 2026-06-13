@@ -228,7 +228,7 @@ async function runCutLive(argv: string[]): Promise<ExitCode> {
       overwrite: { type: "boolean", default: false },
       "no-checkpoint": { type: "boolean", default: false },
       output: { type: "string", short: "o" },
-      live: { type: "boolean", default: false }, // parsed but ignored here (already handled upstream)
+      live: { type: "boolean", default: false }, // accepted for back-compat; this is the default path
     },
   });
 
@@ -348,14 +348,16 @@ async function runCutLive(argv: string[]): Promise<ExitCode> {
 // ── main entry point ──────────────────────────────────────────────────────
 
 async function runCut(argv: string[]): Promise<ExitCode> {
-  // Peek at flags to decide route before full parse
-  const isLive = argv.includes("--live");
+  // Peek at flags to decide route before full parse.
+  // Default is the live API-loop path; --inject opts into the experimental
+  // prproj direct-injection path (sequence cloning still corrupts projects —
+  // clip injection into an existing sequence is proven, cloning is not).
+  const isInject = argv.includes("--inject");
 
-  if (isLive) {
+  if (!isInject) {
     return runCutLive(argv);
   }
 
-  // Default: inject path
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -367,22 +369,23 @@ async function runCut(argv: string[]): Promise<ExitCode> {
       "no-checkpoint": { type: "boolean", default: false },
       output: { type: "string", short: "o" },
       prproj: { type: "string" },
-      live: { type: "boolean", default: false },
-      // --resume is --live-only; error if combined with inject path
+      inject: { type: "boolean", default: false },
+      // --resume is live-only; error if combined with inject path
       resume: { type: "boolean", default: false },
     },
   });
+  note("WARNING: --inject is experimental — verify the project opens in Premiere before doing further work in it (a .bak backup is kept).");
 
   if (values.resume) {
-    note("ppro cut: --resume requires --live");
+    note("ppro cut: --resume is not available with --inject");
     return EXIT.USAGE;
   }
 
   const mediaPath = positionals[0];
   if (!mediaPath || !values.remove || values.remove.length === 0) {
     note(
-      "usage: ppro cut <media-file> --remove <ranges.json> --template SEQUENCE [--prproj path.prproj] [--sequence NAME] [--output path.json]\n" +
-        "       ppro cut <media-file> --remove <ranges.json> --live [--template SEQUENCE] [--sequence NAME] [--resume] [--overwrite]",
+      "usage: ppro cut <media-file> --remove <ranges.json> [--template SEQUENCE] [--sequence NAME] [--resume] [--overwrite]\n" +
+        "       ppro cut <media-file> --remove <ranges.json> --inject --template SEQUENCE [--prproj path.prproj] [--sequence NAME]  (experimental)",
     );
     return EXIT.USAGE;
   }
@@ -394,9 +397,9 @@ async function runCut(argv: string[]): Promise<ExitCode> {
   // --template is required for inject path
   if (!values.template) {
     note(
-      "ppro cut: --template <SEQUENCE_NAME> is required for the inject path.\n" +
+      "ppro cut: --template <SEQUENCE_NAME> is required with --inject.\n" +
         "Create a sequence in Premiere with the desired track layout (EQ, volume, panner) and pass its name here.\n" +
-        "Use --live to use the API loop path instead.",
+        "Omit --inject to use the default API loop path instead.",
     );
     return EXIT.USAGE;
   }
