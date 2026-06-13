@@ -4,6 +4,12 @@
   "description": "CLI that lets AI agents edit your Adobe Premiere Pro timeline.",
   "license": "MIT",
   "author": "thedalbee",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thedalbee/premiere-pro-agent.git"
+  },
+  "homepage": "https://github.com/thedalbee/premiere-pro-agent#readme",
+  "bugs": "https://github.com/thedalbee/premiere-pro-agent/issues",
   "type": "module",
   "bin": {
     "ppro": "bin/ppro.mjs"
