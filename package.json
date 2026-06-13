@@ -16,7 +16,8 @@
     "test": "npm run build && node --test",
     "package:plugin": "node scripts/package-plugin.mjs",
     "track": "node scripts/track-installs.mjs",
-    "track:watch": "node scripts/track-installs.mjs --watch"
+    "track:watch": "node scripts/track-installs.mjs --watch",
+    "track:log": "node scripts/track-installs.mjs --log"
   },
   "keywords": [
     "premiere-pro",
