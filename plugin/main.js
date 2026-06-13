@@ -4,11 +4,11 @@
 
 const PROTOCOL = 1;
 const VERSION = "0.1.0";
-// "localhost" (not 127.0.0.1) — the loaded permission snapshot only matches
-// "ws://localhost" (UXP matches the literal manifest string at load time).
-// Keep port 7200 clear of foreign listeners; localhost may resolve to ::1
-// first, so the daemon must be the only listener on either family.
-const WS_URL = "ws://localhost:7200";
+// Must be "localhost" — UXP rejects IP literals in network permissions
+// ("Manifest entry not found" for ws://127.0.0.1). Port 7300 avoids
+// foreign listeners that may sit on common ports across IPv4/IPv6:
+// localhost can resolve to ::1 first and silently connect elsewhere.
+const WS_URL = "ws://localhost:7300";
 const RECONNECT_MS = 2000;
 
 // If handler loading dies (e.g. relative require unsupported in this UXP
@@ -57,7 +57,7 @@ function connect() {
     if (loadError) {
       setStatus("disconnected", `connected, but handlers failed: ${loadError}`);
     } else {
-      setStatus("connected", "connected to daemon (:7200)");
+      setStatus("connected", "connected to daemon (:7300)");
     }
     ws.send(
       JSON.stringify({ type: "hello", protocol: PROTOCOL, version: VERSION, error: loadError || undefined }),

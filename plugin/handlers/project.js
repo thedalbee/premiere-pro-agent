@@ -60,7 +60,10 @@ async function projectClose({ saveFirst = false } = {}) {
   const opts = new ppro.CloseProjectOptions();
   opts.setPromptIfDirty(false);
   opts.setSaveWorkspace(false);
-  const ok = await ppro.Project.close(opts);
+  // close() is an instance method; older builds exposed it on Project
+  const ok = typeof project.close === "function"
+    ? await project.close(opts)
+    : await ppro.Project.close(opts);
   return { closed: ok !== false, path: projectPath, name: projectName };
 }
 

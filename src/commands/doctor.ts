@@ -101,13 +101,13 @@ function checkPort(port: number): Promise<boolean> {
 }
 
 async function checkBridge(): Promise<Check> {
-  const listening = await checkPort(7200);
+  const listening = await checkPort(7300);
   return {
     name: "bridge",
     status: "info",
     detail: listening
-      ? "port 7200 is in use (plugin bridge or another process)"
-      : "port 7200 not in use (daemon auto-starts when needed)",
+      ? "port 7300 is in use (plugin bridge or another process)"
+      : "port 7300 not in use (daemon auto-starts when needed)",
   };
 }
 

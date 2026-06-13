@@ -31,7 +31,14 @@
   "requiredPermissions": {
     "localFileSystem": "fullAccess",
     "network": {
-      "domains": ["localhost", "ws://localhost", "127.0.0.1", "ws://127.0.0.1"]
+      "domains": [
+        "localhost",
+        "ws://localhost",
+        "ws://localhost:7300",
+        "127.0.0.1",
+        "ws://127.0.0.1",
+        "ws://127.0.0.1:7300"
+      ]
     }
   }
 }

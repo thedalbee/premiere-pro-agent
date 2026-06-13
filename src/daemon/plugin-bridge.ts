@@ -27,7 +27,7 @@ export class PluginBridge {
   private pluginHelloError: string | null = null;
   private pending = new Map<string, Pending>();
 
-  start(port = 7200): void {
+  start(port = 7300): void {
     const server = new WebSocketServer({ host: "127.0.0.1", port });
     this.server = server;
 
