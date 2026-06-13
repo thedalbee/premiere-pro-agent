@@ -5,6 +5,7 @@ import { setup } from "./commands/setup.js";
 import { silence } from "./commands/silence.js";
 import { status } from "./commands/status.js";
 import { transcribeCommand } from "./commands/transcribe.js";
+import { undo } from "./commands/undo.js";
 import { EXIT, type ExitCode } from "./output/exit-codes.js";
 
 export interface Command {
@@ -13,7 +14,7 @@ export interface Command {
   run(argv: string[]): Promise<ExitCode>;
 }
 
-const COMMANDS: Command[] = [setup, doctor, status, transcribeCommand, silence, cut, checkpoint];
+const COMMANDS: Command[] = [setup, doctor, status, transcribeCommand, silence, cut, checkpoint, undo];
 
 function printUsage(): void {
   const width = Math.max(...COMMANDS.map((c) => c.name.length));

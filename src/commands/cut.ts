@@ -55,6 +55,49 @@ function loadRemovals(filePath: string): Range[] {
   });
 }
 
+// ── exported helpers (used by tests) ─────────────────────────────────────
+
+export interface CutInjectDryRunPreview {
+  dryRun: true;
+  mode: "inject";
+  media: string;
+  prproj: string;
+  sequence: string;
+  wouldCreateSequence: boolean;
+  clips: number;
+  predictedSec: number;
+  backupPath: string;
+  output: string;
+}
+
+/**
+ * Exported for testing: computes what cut (inject mode) would do, without touching any file.
+ * `seqExists` must be pre-computed by calling sequenceExistsInPrproj.
+ */
+export function buildCutInjectDryRunPreview(opts: {
+  prprojPath: string;
+  sequenceName: string;
+  mediaPath: string;
+  clips: Array<{ start: number; end: number }>;
+  outputPath: string;
+  seqExists: boolean;
+}): CutInjectDryRunPreview {
+  const predictedSec =
+    Math.round(opts.clips.reduce((sum, c) => sum + (c.end - c.start), 0) * 1000) / 1000;
+  return {
+    dryRun: true,
+    mode: "inject",
+    media: opts.mediaPath,
+    prproj: opts.prprojPath,
+    sequence: opts.sequenceName,
+    wouldCreateSequence: !opts.seqExists,
+    clips: opts.clips.length,
+    predictedSec,
+    backupPath: opts.prprojPath + ".bak",
+    output: opts.outputPath,
+  };
+}
+
 // ── inject path helpers ───────────────────────────────────────────────────
 
 async function waitForPluginReconnect(timeoutMs: number): Promise<boolean> {
@@ -77,6 +120,7 @@ async function runCutInject(
   clips: Array<{ start: number; end: number }>,
   outputPath: string,
   jsonOutput: boolean,
+  dryRun: boolean = false,
 ): Promise<ExitCode> {
   // Step 1: check Premiere connection and verify / create target sequence
   note("checking Premiere project status...");
@@ -96,7 +140,39 @@ async function runCutInject(
     path.resolve(projectInfo.path) === path.resolve(prprojPath);
 
   // Step 2: check whether the target sequence already exists in the prproj XML
-  let seqExists = sequenceExistsInPrproj(prprojPath, sequenceName);
+  const seqExists = sequenceExistsInPrproj(prprojPath, sequenceName);
+  const predictedSec =
+    Math.round(clips.reduce((sum, c) => sum + (c.end - c.start), 0) * 1000) / 1000;
+  const backupPath = prprojPath + ".bak";
+
+  // ── dry-run: emit preview and exit without mutating anything ─────────────
+  if (dryRun) {
+    const preview = {
+      dryRun: true,
+      mode: "inject",
+      media: mediaPath,
+      prproj: prprojPath,
+      sequence: sequenceName,
+      wouldCreateSequence: !seqExists,
+      clips: clips.length,
+      predictedSec,
+      backupPath,
+      output: outputPath,
+    };
+    if (jsonOutput) {
+      printJson(preview);
+    } else {
+      process.stdout.write(
+        `[dry-run] would inject ${clips.length} clips (${predictedSec}s) → sequence "${sequenceName}"\n` +
+          `  prproj: ${sanitizePath(prprojPath)}\n` +
+          `  media:  ${sanitizePath(mediaPath)}\n` +
+          `  sequence exists: ${seqExists ? "yes" : "no (would be created via UXP)"}\n` +
+          `  backup: ${sanitizePath(backupPath)}\n` +
+          `  output: ${sanitizePath(outputPath)}\n`,
+      );
+    }
+    return EXIT.OK;
+  }
 
   if (!seqExists) {
     // Sequence does not exist in the file — try to create it via UXP
@@ -116,8 +192,8 @@ async function runCutInject(
       await callPremiere("project.save", {}, 10_000);
       note("project saved. Re-reading prproj...");
       // Re-check that the sequence now appears in the saved file
-      seqExists = sequenceExistsInPrproj(prprojPath, sequenceName);
-      if (!seqExists) {
+      const seqNowExists = sequenceExistsInPrproj(prprojPath, sequenceName);
+      if (!seqNowExists) {
         note(
           `ERROR: Sequence "${sequenceName}" was created in Premiere but could not be found in ` +
             `the saved prproj file. Please verify the project path and try again.`,
@@ -149,7 +225,7 @@ async function runCutInject(
     }
   }
 
-  const result = await doInject(prprojPath, sequenceName, mediaPath, clips, outputPath, jsonOutput, premiereConnected);
+  const result = await doInject(prprojPath, sequenceName, mediaPath, clips, outputPath, jsonOutput, premiereConnected, predictedSec);
   if (result !== EXIT.OK && result !== EXIT.VALIDATION) return result;
 
   if (needsClose) {
@@ -183,10 +259,8 @@ async function doInject(
   outputPath: string,
   jsonOutput: boolean,
   withValidationGate: boolean,
+  predictedSec: number,
 ): Promise<ExitCode> {
-  const predictedSec =
-    Math.round(clips.reduce((sum, c) => sum + (c.end - c.start), 0) * 1000) / 1000;
-
   note(`injecting ${clips.length} clips into "${sequenceName}" via prproj...`);
   note(`A .bak backup will be created. Verify the project opens in Premiere after injection.`);
 
@@ -265,12 +339,13 @@ async function runCutLive(argv: string[]): Promise<ExitCode> {
       "no-checkpoint": { type: "boolean", default: false },
       output: { type: "string", short: "o" },
       live: { type: "boolean", default: false }, // accepted but this branch only runs with --live
+      "dry-run": { type: "boolean", default: false },
     },
   });
 
   const mediaPath = positionals[0];
   if (!mediaPath || !values.remove || values.remove.length === 0) {
-    note("usage: ppro cut <media-file> --remove <ranges.json> --live [--sequence NAME] [--template SEQUENCE] [--overwrite] [--resume]");
+    note("usage: ppro cut <media-file> --remove <ranges.json> --live [--sequence NAME] [--template SEQUENCE] [--overwrite] [--resume] [--dry-run]");
     return EXIT.USAGE;
   }
   if (!fs.existsSync(mediaPath)) {
@@ -300,6 +375,33 @@ async function runCutLive(argv: string[]): Promise<ExitCode> {
   note(
     `${clips.length} clips to place (${predictedSec}s kept, ${removedSec}s removed) → sequence "${sequenceName}"`,
   );
+
+  // ── dry-run: preview only, no mutations ───────────────────────────────────
+  if (values["dry-run"]) {
+    const preview = {
+      dryRun: true,
+      mode: "live",
+      media: path.resolve(mediaPath),
+      sequence: sequenceName,
+      clips: clips.length,
+      predictedSec,
+      removedSec,
+      wouldCreateCheckpoint: !values["no-checkpoint"] && !values.resume,
+      output: outputPath,
+    };
+    if (values.json) {
+      printJson(preview);
+    } else {
+      process.stdout.write(
+        `[dry-run] would place ${clips.length} clips (${predictedSec}s) → sequence "${sequenceName}"\n` +
+          `  media:    ${sanitizePath(path.resolve(mediaPath))}\n` +
+          `  removed:  ${removedSec}s\n` +
+          `  checkpoint: ${preview.wouldCreateCheckpoint ? "yes" : "no (--no-checkpoint or --resume)"}\n` +
+          `  output:   ${sanitizePath(outputPath)}\n`,
+      );
+    }
+    return EXIT.OK;
+  }
 
   if (!values["no-checkpoint"] && !values.resume) {
     const { checkpointPath } = await createCheckpoint();
@@ -405,6 +507,7 @@ async function runCut(argv: string[]): Promise<ExitCode> {
       prproj: { type: "string" },
       // --resume is live-only
       resume: { type: "boolean", default: false },
+      "dry-run": { type: "boolean", default: false },
     },
   });
 
@@ -416,8 +519,8 @@ async function runCut(argv: string[]): Promise<ExitCode> {
   const mediaPath = positionals[0];
   if (!mediaPath || !values.remove || values.remove.length === 0) {
     note(
-      "usage: ppro cut <media-file> --remove <ranges.json> [--sequence NAME] [--prproj path.prproj]\n" +
-        "       ppro cut <media-file> --remove <ranges.json> --live [--sequence NAME] [--template SEQUENCE] [--overwrite] [--resume]",
+      "usage: ppro cut <media-file> --remove <ranges.json> [--sequence NAME] [--prproj path.prproj] [--dry-run]\n" +
+        "       ppro cut <media-file> --remove <ranges.json> --live [--sequence NAME] [--template SEQUENCE] [--overwrite] [--resume] [--dry-run]",
     );
     return EXIT.USAGE;
   }
@@ -474,11 +577,11 @@ async function runCut(argv: string[]): Promise<ExitCode> {
     `${clips.length} clips to place (${predictedSec}s kept, ${removedSec}s removed) → inject into "${sequenceName}"`,
   );
 
-  return runCutInject(prprojPath, sequenceName, path.resolve(mediaPath), clips, outputPath, values.json ?? false);
+  return runCutInject(prprojPath, sequenceName, path.resolve(mediaPath), clips, outputPath, values.json ?? false, values["dry-run"] ?? false);
 }
 
 export const cut: Command = {
   name: "cut",
-  summary: "Cut ranges out of a media file into a Premiere sequence",
+  summary: "Cut ranges out of a media file into a Premiere sequence (--dry-run to preview without writing)",
   run: runCut,
 };
