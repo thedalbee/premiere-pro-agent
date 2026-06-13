@@ -9,6 +9,30 @@ const run = promisify(execFile);
 
 export const WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo";
 
+/**
+ * Local Hugging Face hub directory a model would be cached in. Honors
+ * HUGGINGFACE_HUB_CACHE / HF_HOME, else ~/.cache/huggingface/hub. Used only to
+ * tailor the first-run message, so an env-mismatch is harmless (it just shows a
+ * download hint that may be unnecessary).
+ */
+export function huggingfaceModelDir(model: string, env: NodeJS.ProcessEnv = process.env): string {
+  const cacheRoot =
+    env.HUGGINGFACE_HUB_CACHE ??
+    (env.HF_HOME
+      ? path.join(env.HF_HOME, "hub")
+      : path.join(os.homedir(), ".cache", "huggingface", "hub"));
+  return path.join(cacheRoot, "models--" + model.replace(/\//g, "--"));
+}
+
+/** Best-effort: is the Whisper model already downloaded locally? */
+export function isModelCached(model: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  try {
+    return fs.existsSync(huggingfaceModelDir(model, env));
+  } catch {
+    return false;
+  }
+}
+
 export interface TranscriptWord {
   text: string;
   start: number;
@@ -88,7 +112,14 @@ export function transcribe(
   onNote: (note: string) => void,
 ): Promise<Pick<Transcript, "language" | "words" | "text">> {
   const python = process.env.PPRO_PYTHON ?? "python3";
-  onNote(`transcribing with ${WHISPER_MODEL} (this downloads the model on first run)`);
+  if (isModelCached(WHISPER_MODEL)) {
+    onNote(`transcribing with ${WHISPER_MODEL}`);
+  } else {
+    onNote(
+      `first run: downloading the Whisper model (${WHISPER_MODEL}, ~1.5GB) — ` +
+        `this can take a few minutes and may look idle; it is cached for next time`,
+    );
+  }
 
   return new Promise((resolve, reject) => {
     const child = spawn(python, ["-c", PYTHON_SCRIPT, audioPath, language, WHISPER_MODEL]);
