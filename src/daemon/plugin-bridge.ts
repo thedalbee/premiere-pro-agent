@@ -27,17 +27,28 @@ export function verifyOrigin(origin: string | undefined | null): boolean {
   return true; // ws://, null, app-specific schemes → allow (and log for review)
 }
 
+function originLogPath(): string {
+  return (
+    process.env.PPRO_BRIDGE_ORIGIN_LOG ?? path.join(os.homedir(), ".ppro", "bridge-origins.log")
+  );
+}
+
 /**
- * Append the Origin of an accepted connection to ~/.ppro/bridge-origins.log so
- * the real UXP value can be observed without forcing a connection. Best-effort:
- * logging must never break the bridge. The daemon is spawned with stdio
- * "ignore", so a file is the only durable sink.
+ * Append EVERY upgrade attempt's Origin + decision to ~/.ppro/bridge-origins.log
+ * (override with PPRO_BRIDGE_ORIGIN_LOG). This must record REJECTED attempts too
+ * — if the real UXP client ever presents an http(s) origin it would be rejected
+ * and never reach `connection`, so logging only accepted connections would hide
+ * exactly the failure we need to diagnose. The daemon is spawned with stdio
+ * "ignore", so a file is the only durable sink. Best-effort: never throws.
  */
-function recordOrigin(origin: string | undefined): void {
+function recordOrigin(origin: string | undefined, allowed: boolean): void {
   try {
-    const file = path.join(os.homedir(), ".ppro", "bridge-origins.log");
+    const file = originLogPath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, `${new Date().toISOString()} origin=${origin ?? "<none>"}\n`);
+    fs.appendFileSync(
+      file,
+      `${new Date().toISOString()} origin=${origin ?? "<none>"} decision=${allowed ? "allow" : "reject"}\n`,
+    );
   } catch {
     /* logging is diagnostic only — never throw */
   }
@@ -73,13 +84,18 @@ export class PluginBridge {
       host: "127.0.0.1",
       port,
       // Reject browser web origins (DNS-rebinding / CSWSH). The native UXP
-      // client presents no http(s) web origin, so it is unaffected.
-      verifyClient: (info: { origin?: string }) => verifyOrigin(info.origin),
+      // client presents no http(s) web origin, so it is unaffected. Logging the
+      // decision here (not in `connection`) captures rejected attempts too, so a
+      // plugin blocked by this rule still leaves a diagnosable trail.
+      verifyClient: (info: { origin?: string }) => {
+        const allow = verifyOrigin(info.origin);
+        recordOrigin(info.origin, allow);
+        return allow;
+      },
     });
     this.server = server;
 
-    server.on("connection", (socket, req) => {
-      recordOrigin(req.headers.origin);
+    server.on("connection", (socket) => {
       this.plugin = socket;
 
       socket.on("message", (raw) => {
