@@ -1,6 +1,7 @@
 import { checkpoint } from "./commands/checkpoint.js";
 import { cut } from "./commands/cut.js";
 import { doctor } from "./commands/doctor.js";
+import { setup } from "./commands/setup.js";
 import { silence } from "./commands/silence.js";
 import { status } from "./commands/status.js";
 import { transcribeCommand } from "./commands/transcribe.js";
@@ -12,7 +13,7 @@ export interface Command {
   run(argv: string[]): Promise<ExitCode>;
 }
 
-const COMMANDS: Command[] = [doctor, status, transcribeCommand, silence, cut, checkpoint];
+const COMMANDS: Command[] = [setup, doctor, status, transcribeCommand, silence, cut, checkpoint];
 
 function printUsage(): void {
   const width = Math.max(...COMMANDS.map((c) => c.name.length));
