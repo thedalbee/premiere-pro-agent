@@ -2,38 +2,51 @@
  * prproj-inject.test.mjs
  *
  * Unit tests for the prproj injection generator.
- * Uses /tmp/prproj_lab/I45_INJECT_MID.prproj as a fixture (the confirmed-working
- * injection sample from L099 experiment).
+ * Uses /tmp/prproj_lab/I45_copy.prproj as the primary fixture:
+ *   - FCP_XML_TEST: has 10 clips — used as a reject-non-empty test case
+ *   - CUT_TEMPLATE: empty sequence — the normal injection target
+ *   - I45_CLI_CUT: has 1,102 clips of the target media — donor source
  *
- * Falls back gracefully when the fixture is absent (CI without the test data).
+ * Falls back gracefully when fixtures are absent (CI without the test data).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import path from "node:path";
 import zlib from "node:zlib";
 
 // Build must run before tests (handled by npm test → tsc + node --test)
-const { injectClips, selfValidate, TICKS_PER_SECOND } = await import(
+const { injectClips, selfValidate, sequenceExistsInPrproj, TICKS_PER_SECOND } = await import(
   "../dist/cut/prproj-inject.js"
 );
 
 // ── fixture paths ──────────────────────────────────────────────────────────
-const FIXTURE_PRPROJ = "/tmp/prproj_lab/I45_INJECT_MID.prproj";
-// findMediaSourceIds matches by <Title> or <FilePath> in the prproj XML —
-// the file does NOT need to exist on disk. Use the basename as found in the Media Title.
-// (From I45.xml: <Title>2026-06-11 23-33-37.mp4</Title>)
+const FIXTURE_COPY = "/tmp/prproj_lab/I45_copy.prproj";
+// findMediaSourceIds matches by <Title> in the prproj XML — the file does NOT
+// need to exist on disk. Basename as found in Media Title elements.
 const FIXTURE_MEDIA = "2026-06-11 23-33-37.mp4";
-const TEMPLATE_SEQ = "FCP_XML_TEST";
+const EMPTY_SEQ = "CUT_TEMPLATE";        // empty sequence — the inject target
+const NONEMPTY_SEQ = "FCP_XML_TEST";     // has clips — must be rejected
 
 // ── helpers ────────────────────────────────────────────────────────────────
 function fixtureAvailable() {
-  return fs.existsSync(FIXTURE_PRPROJ);
+  return fs.existsSync(FIXTURE_COPY);
 }
 
 function gunzipFixture(filePath) {
   const buf = fs.readFileSync(filePath);
   return zlib.gunzipSync(buf).toString("utf8");
+}
+
+function makeTmpCopy(suffix) {
+  const tmpProj = FIXTURE_COPY + "." + suffix + "-" + process.pid + ".prproj";
+  fs.copyFileSync(FIXTURE_COPY, tmpProj);
+  return tmpProj;
+}
+
+function cleanupTmp(tmpProj) {
+  for (const p of [tmpProj, tmpProj + ".bak", tmpProj + ".inject-debug.json"]) {
+    try { fs.unlinkSync(p); } catch { /* ignore */ }
+  }
 }
 
 // ── smoke tests (always run) ───────────────────────────────────────────────
@@ -43,7 +56,6 @@ test("TICKS_PER_SECOND constant is correct", () => {
 });
 
 test("selfValidate catches mismatched clip count", () => {
-  // Minimal XML that looks valid but has wrong track item count
   const fakeXml = `<?xml version="1.0" encoding="UTF-8"?>\n<PremiereData Version="3">\n\t<VideoClipTrack ObjectUID="aaa-000-111" ClassID="f68dcd81" Version="1">\n\t\t<ClipItems Version="3">\n\t\t\t<TrackItems Version="1">\n\t\t\t\t<TrackItem Index="0" ObjectRef="999"/>\n\t\t\t</TrackItems>\n\t\t</ClipItems>\n\t</VideoClipTrack>\n\t<AudioClipTrack ObjectUID="bbb-000-111" ClassID="097f6203" Version="7">\n\t\t<ClipItems Version="3">\n\t\t\t<TrackItems Version="1">\n\t\t\t\t<TrackItem Index="0" ObjectRef="999"/>\n\t\t\t</TrackItems>\n\t\t</ClipItems>\n\t</AudioClipTrack>\n\t<VideoClipTrackItem ObjectID="999" ClassID="368b" Version="8">\n\t</VideoClipTrackItem>\n</PremiereData>`;
 
   const result = selfValidate(fakeXml, "aaa-000-111", "bbb-000-111", 3, 1000);
@@ -72,25 +84,47 @@ test("selfValidate passes on minimal well-formed XML", () => {
 
 // ── fixture-dependent tests ────────────────────────────────────────────────
 
-test("fixture prproj can be gunzipped and is valid XML", { skip: !fixtureAvailable() }, () => {
-  const xml = gunzipFixture(FIXTURE_PRPROJ);
+test("fixture prproj can be gunzipped and contains expected sequences", { skip: !fixtureAvailable() }, () => {
+  const xml = gunzipFixture(FIXTURE_COPY);
   assert.ok(xml.includes("<PremiereData"), "should start with PremiereData");
   assert.ok(xml.includes("</PremiereData>"), "should end with PremiereData close");
-  assert.ok(xml.includes("FCP_XML_TEST"), "fixture should contain template sequence");
+  assert.ok(xml.includes("CUT_TEMPLATE"), "fixture should contain CUT_TEMPLATE");
+  assert.ok(xml.includes("FCP_XML_TEST"), "fixture should contain FCP_XML_TEST");
+});
+
+test("sequenceExistsInPrproj: returns true for existing sequence", { skip: !fixtureAvailable() }, () => {
+  assert.ok(sequenceExistsInPrproj(FIXTURE_COPY, "CUT_TEMPLATE"));
+  assert.ok(sequenceExistsInPrproj(FIXTURE_COPY, "FCP_XML_TEST"));
+});
+
+test("sequenceExistsInPrproj: returns false for missing sequence", { skip: !fixtureAvailable() }, () => {
+  assert.ok(!sequenceExistsInPrproj(FIXTURE_COPY, "DOES_NOT_EXIST_XYZ"));
 });
 
 test(
-  "injectClips: 3 clips into FCP_XML_TEST template → validation passes",
+  "injectClips: rejects non-empty target sequence (FCP_XML_TEST has clips)",
+  { skip: !fixtureAvailable() },
+  async () => {
+    // FCP_XML_TEST has clips — injectClips must refuse with a clear error
+    await assert.rejects(
+      () =>
+        injectClips({
+          prprojPath: FIXTURE_COPY,
+          targetSequenceName: NONEMPTY_SEQ,
+          mediaPath: FIXTURE_MEDIA,
+          clips: [{ start: 0.5, end: 2.0 }],
+        }),
+      /already has \d+ clip|pass an empty sequence/i,
+    );
+  },
+);
+
+test(
+  "injectClips: 3 clips into CUT_TEMPLATE (empty) → validation passes",
   { skip: !fixtureAvailable() },
   async (t) => {
-    // Work on a temp copy so we don't mutate the fixture
-    const tmpProj = FIXTURE_PRPROJ + ".inject-test-" + process.pid + ".prproj";
-    fs.copyFileSync(FIXTURE_PRPROJ, tmpProj);
-    t.after(() => {
-      for (const p of [tmpProj, tmpProj + ".bak", tmpProj + ".inject-debug.json"]) {
-        try { fs.unlinkSync(p); } catch { /* ignore */ }
-      }
-    });
+    const tmpProj = makeTmpCopy("inject3");
+    t.after(() => cleanupTmp(tmpProj));
 
     const clips = [
       { start: 0.5, end: 2.0 },
@@ -100,8 +134,7 @@ test(
 
     const result = await injectClips({
       prprojPath: tmpProj,
-      templateSequenceName: TEMPLATE_SEQ,
-      newSequenceName: "INJECT_TEST_SEQ",
+      targetSequenceName: EMPTY_SEQ,
       mediaPath: FIXTURE_MEDIA,
       clips,
       debug: true,
@@ -110,10 +143,9 @@ test(
     assert.equal(result.clipsInjected, 3, "should inject 3 clips");
     assert.ok(fs.existsSync(result.backupPath), "backup should exist");
 
-    // Verify output can be gunzipped
+    // Verify output can be gunzipped and contains expected names
     const outXml = gunzipFixture(tmpProj);
-    assert.ok(outXml.includes("INJECT_TEST_SEQ"), "output should contain new sequence name");
-    assert.ok(outXml.includes("FCP_XML_TEST"), "original template sequence should still be present");
+    assert.ok(outXml.includes(EMPTY_SEQ), "output should still contain the sequence name");
 
     const val = result.validation;
     assert.equal(val.videoTrackItemCount, 3, "V1 should have 3 items");
@@ -124,84 +156,54 @@ test(
 );
 
 test(
-  "injectClips: backup is created",
+  "injectClips: backup is created and matches original size",
   { skip: !fixtureAvailable() },
   async (t) => {
-    const tmpProj = FIXTURE_PRPROJ + ".bak-test-" + process.pid + ".prproj";
-    fs.copyFileSync(FIXTURE_PRPROJ, tmpProj);
-    t.after(() => {
-      for (const p of [tmpProj, tmpProj + ".bak", tmpProj + ".inject-debug.json"]) {
-        try { fs.unlinkSync(p); } catch { /* ignore */ }
-      }
-    });
+    const tmpProj = makeTmpCopy("bak");
+    t.after(() => cleanupTmp(tmpProj));
 
     const origSize = fs.statSync(tmpProj).size;
     await injectClips({
       prprojPath: tmpProj,
-      templateSequenceName: TEMPLATE_SEQ,
-      newSequenceName: "BAK_TEST_SEQ",
+      targetSequenceName: EMPTY_SEQ,
       mediaPath: FIXTURE_MEDIA,
       clips: [{ start: 1.0, end: 3.0 }],
     });
     const bakSize = fs.statSync(tmpProj + ".bak").size;
     // Backup should match original size (±gzip variance, so within 10%)
-    assert.ok(Math.abs(bakSize - origSize) / origSize < 0.1, "backup size should be close to original");
-  },
-);
-
-// ── empty-template (donor fallback) fixture ───────────────────────────────
-// CUT_TEMPLATE has zero clips (track mixer settings only — its intended use);
-// I45_CLI_CUT in the same project holds 1,102 clips of the same media that
-// serve as the donor chain.
-const FIXTURE_FULL = "/tmp/prproj_lab/I45_FULL_INJECT.prproj";
-
-test(
-  "injectClips: empty CUT_TEMPLATE + donor clip elsewhere → validation passes",
-  { skip: !fs.existsSync(FIXTURE_FULL) },
-  async (t) => {
-    const tmpProj = FIXTURE_FULL + ".donor-test-" + process.pid + ".prproj";
-    fs.copyFileSync(FIXTURE_FULL, tmpProj);
-    t.after(() => {
-      for (const p of [tmpProj, tmpProj + ".bak", tmpProj + ".inject-debug.json"]) {
-        try { fs.unlinkSync(p); } catch { /* ignore */ }
-      }
-    });
-
-    const clips = [
-      { start: 1.0, end: 2.5 },
-      { start: 4.0, end: 6.0 },
-    ];
-
-    const result = await injectClips({
-      prprojPath: tmpProj,
-      templateSequenceName: "CUT_TEMPLATE",
-      newSequenceName: "DONOR_TEST_SEQ",
-      mediaPath: FIXTURE_MEDIA,
-      clips,
-    });
-
-    assert.equal(result.clipsInjected, 2);
-    const val = result.validation;
-    assert.equal(val.videoTrackItemCount, 2, `V1 items — errors: ${val.errors.join(", ")}`);
-    assert.equal(val.audioTrackItemCount, 2);
-    assert.equal(val.allRefsResolved, true);
-    assert.equal(val.passed, true, `validation should pass — errors: ${val.errors.join(", ")}`);
-
-    const outXml = gunzipFixture(tmpProj);
-    assert.ok(outXml.includes("DONOR_TEST_SEQ"));
+    assert.ok(
+      Math.abs(bakSize - origSize) / origSize < 0.1,
+      `backup size ${bakSize} should be close to original ${origSize}`,
+    );
   },
 );
 
 test(
-  "injectClips: media absent from project → clear error before donor search",
-  { skip: !fs.existsSync(FIXTURE_FULL) },
+  "injectClips: throws if target sequence not found",
+  { skip: !fixtureAvailable() },
   async () => {
     await assert.rejects(
       () =>
         injectClips({
-          prprojPath: FIXTURE_FULL,
-          templateSequenceName: "CUT_TEMPLATE",
-          newSequenceName: "X",
+          prprojPath: FIXTURE_COPY,
+          targetSequenceName: "NONEXISTENT_SEQ_XYZ",
+          mediaPath: FIXTURE_MEDIA,
+          clips: [{ start: 0, end: 1 }],
+        }),
+      /not found/i,
+    );
+  },
+);
+
+test(
+  "injectClips: media absent from project → clear error",
+  { skip: !fixtureAvailable() },
+  async () => {
+    await assert.rejects(
+      () =>
+        injectClips({
+          prprojPath: FIXTURE_COPY,
+          targetSequenceName: EMPTY_SEQ,
           mediaPath: "definitely-not-in-project.mov",
           clips: [{ start: 0, end: 1 }],
         }),
@@ -211,19 +213,23 @@ test(
 );
 
 test(
-  "injectClips: throws if template sequence not found",
+  "injectClips: 1 clip into CUT_TEMPLATE → output file grows (clip objects added)",
   { skip: !fixtureAvailable() },
-  async () => {
-    await assert.rejects(
-      () =>
-        injectClips({
-          prprojPath: FIXTURE_PRPROJ,
-          templateSequenceName: "NONEXISTENT_TEMPLATE_XYZ",
-          newSequenceName: "X",
-          mediaPath: "/tmp/fake.mov",
-          clips: [{ start: 0, end: 1 }],
-        }),
-      /not found/i,
-    );
+  async (t) => {
+    const tmpProj = makeTmpCopy("grow");
+    t.after(() => cleanupTmp(tmpProj));
+
+    const origSize = fs.statSync(tmpProj).size;
+    const result = await injectClips({
+      prprojPath: tmpProj,
+      targetSequenceName: EMPTY_SEQ,
+      mediaPath: FIXTURE_MEDIA,
+      clips: [{ start: 2.0, end: 5.0 }],
+    });
+
+    const newSize = fs.statSync(tmpProj).size;
+    assert.ok(newSize > origSize, `output file (${newSize}) should be larger than original (${origSize})`);
+    assert.equal(result.clipsInjected, 1);
+    assert.equal(result.validation.passed, true, `validation errors: ${result.validation.errors.join(", ")}`);
   },
 );

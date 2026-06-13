@@ -492,3 +492,95 @@ async function sequenceInspect({ sequenceName }) {
 }
 
 module.exports["sequence.inspect"] = sequenceInspect;
+
+// ── sequence.create ──────────────────────────────────────────────────────────
+//
+// Creates a new empty sequence with 30fps frame rate.
+// Params: { name: string, mediaPath?: string }
+//   - name: the desired sequence name
+//   - mediaPath: (optional) path to a media file already imported in the project;
+//     if provided, createSequenceFromMedia is used so the sequence inherits the
+//     correct frame size and fps. If omitted, falls back to createSequence with
+//     a 30fps preset search.
+//
+// Returns: { created: true, name: string }
+//
+async function sequenceCreate({ name, mediaPath }) {
+  if (!name) throw new Error("sequence.create: name is required");
+
+  const project = await getActiveProject();
+
+  // Guard: refuse to create if name already taken
+  const existing = await findSequenceByName(project, name);
+  if (existing) throw new Error(`sequence.create: sequence "${name}" already exists`);
+
+  let seq = null;
+
+  // Path 1: createSequenceFromMedia — inherits fps/frame-size from the source,
+  // then immediately clears the placeholder clip Premiere inserts.
+  if (mediaPath) {
+    try {
+      const sourceItem = await ensureImported(project, mediaPath);
+      seq = await project.createSequenceFromMedia(name, [sourceItem]);
+      if (seq) {
+        await clearAllClips(project, seq);
+      }
+    } catch (err) {
+      // Fall through to preset path if this fails
+      seq = null;
+    }
+  }
+
+  // Path 2: createSequence with a 30fps preset
+  if (!seq) {
+    // Try to find a 30fps preset by name — common names vary between builds
+    const preset30Names = [
+      "DSLR 1080p30",
+      "HDV 1080p30",
+      "AVCHD 1080p30",
+      "1080p30",
+      "30fps",
+    ];
+    let presetId = null;
+    if (ppro.Project && typeof ppro.Project.getSequencePresets === "function") {
+      try {
+        const presets = await ppro.Project.getSequencePresets();
+        for (const preset of presets || []) {
+          const pName = preset.name || preset.getName?.() || "";
+          if (preset30Names.some((n) => pName.includes(n))) {
+            presetId = preset.id || preset.getId?.() || pName;
+            break;
+          }
+        }
+      } catch {
+        // getSequencePresets not available in this build
+      }
+    }
+
+    if (presetId !== null) {
+      seq = await project.createSequence(name, presetId);
+      if (seq) await clearAllClips(project, seq);
+    }
+  }
+
+  // Path 3: createSequence with no preset (Premiere picks default)
+  if (!seq && ppro.Project && typeof project.createSequence === "function") {
+    try {
+      seq = await project.createSequence(name);
+      if (seq) await clearAllClips(project, seq);
+    } catch {
+      // may require a presetId on some builds
+    }
+  }
+
+  if (!seq) {
+    throw new Error(
+      `sequence.create: could not create sequence "${name}". ` +
+        `Create it manually in Premiere and save, then retry.`,
+    );
+  }
+
+  return { created: true, name: seq.name };
+}
+
+module.exports["sequence.create"] = sequenceCreate;
