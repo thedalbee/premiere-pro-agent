@@ -12,6 +12,7 @@ import {
   transcribe,
 } from "../transcription/whisper.js";
 import { mediaDurationSec } from "../audio/probe.js";
+import { IS_MAC } from "../platform.js";
 
 const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"]);
 
@@ -25,6 +26,16 @@ async function runTranscribe(argv: string[]): Promise<ExitCode> {
       output: { type: "string", short: "o" },
     },
   });
+
+  // Local transcription runs on Apple Silicon (mlx) only — macOS-only by design.
+  if (!IS_MAC) {
+    const msg =
+      "ppro transcribe uses a local Apple-Silicon model (mlx) and is macOS-only. " +
+      "On Windows/Linux, generate a transcript with your own tool and pass removal ranges to `ppro cut`.";
+    if (values.json) printJson({ ok: false, error: msg });
+    else note(msg);
+    return EXIT.MISSING_DEPENDENCY;
+  }
 
   const inputPath = positionals[0];
   if (!inputPath) {

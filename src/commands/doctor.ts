@@ -8,6 +8,12 @@ import net from "node:net";
 import type { Command } from "../cli.js";
 import { EXIT, type ExitCode } from "../output/exit-codes.js";
 import { sanitizePath, printJson } from "../output/print.js";
+import {
+  IS_WINDOWS,
+  isSupportedPlatform,
+  premiereSearchDirs,
+  whichCommand,
+} from "../platform.js";
 
 const run = promisify(execFile);
 
@@ -21,15 +27,16 @@ interface Check {
 }
 
 async function checkPlatform(): Promise<Check> {
-  if (process.platform !== "darwin") {
+  if (!isSupportedPlatform()) {
     return {
-      name: "macOS",
+      name: "platform",
       status: "fail",
       detail: `unsupported platform: ${process.platform}`,
-      hint: "v0.x supports macOS only.",
+      hint: "ppro supports macOS and Windows (experimental).",
     };
   }
-  return { name: "macOS", status: "ok", detail: `${os.release()} (${os.arch()})` };
+  const label = IS_WINDOWS ? "Windows (experimental)" : "macOS";
+  return { name: label, status: "ok", detail: `${os.release()} (${os.arch()})` };
 }
 
 function findPremiereApp(): string | null {
@@ -86,6 +93,49 @@ async function checkPremiere(): Promise<Check> {
   };
 }
 
+// EXPERIMENTAL (unverified on real Windows): discover Premiere under Program Files\Adobe.
+function findPremiereExeWindows(): string | null {
+  for (const base of premiereSearchDirs("win32")) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(base);
+    } catch {
+      continue;
+    }
+    const candidates = entries.filter((n) => n.startsWith("Adobe Premiere Pro")).sort().reverse();
+    for (const dir of candidates) {
+      const exe = path.join(base, dir, "Adobe Premiere Pro.exe");
+      if (fs.existsSync(exe)) return exe;
+    }
+  }
+  return null;
+}
+
+async function checkPremiereWindows(): Promise<Check> {
+  const exe = findPremiereExeWindows();
+  if (!exe) {
+    return {
+      name: "Premiere Pro",
+      status: "fail",
+      detail: "not found under Program Files\\Adobe",
+      hint: "Install Adobe Premiere Pro 25.6 or newer.",
+    };
+  }
+  let running = false;
+  try {
+    const { stdout } = await run("tasklist", ["/FI", "IMAGENAME eq Adobe Premiere Pro.exe"]);
+    running = stdout.includes("Adobe Premiere Pro.exe");
+  } catch {
+    running = false;
+  }
+  return {
+    name: "Premiere Pro",
+    status: "ok",
+    detail: `found — ${running ? "running" : "not running"} (experimental)`,
+    hint: running ? undefined : "Open your project in Premiere before running edit commands.",
+  };
+}
+
 function checkPort(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = net.connect({ port, host: "127.0.0.1" });
@@ -113,25 +163,37 @@ async function checkBridge(): Promise<Check> {
 
 async function checkFfmpeg(): Promise<Check> {
   try {
-    const { stdout: which } = await run("which", ["ffmpeg"]);
+    const { stdout: located } = await run(whichCommand(), ["ffmpeg"]);
     const { stdout } = await run("ffmpeg", ["-version"]);
     const firstLine = stdout.split("\n")[0].replace("ffmpeg version ", "");
+    const ffmpegPath = located.split("\n")[0].trim(); // `where` can list several
     return {
       name: "ffmpeg",
       status: "ok",
-      detail: `${firstLine.split(" ")[0]} (${sanitizePath(which.trim())})`,
+      detail: `${firstLine.split(" ")[0]} (${sanitizePath(ffmpegPath)})`,
     };
   } catch {
     return {
       name: "ffmpeg",
       status: "fail",
       detail: "not found",
-      hint: "Install with: brew install ffmpeg",
+      hint: IS_WINDOWS
+        ? "Install ffmpeg (e.g. winget install Gyan.FFmpeg) and ensure it is on PATH."
+        : "Install with: brew install ffmpeg",
     };
   }
 }
 
 async function checkWhisper(): Promise<Check> {
+  if (IS_WINDOWS) {
+    // mlx is Apple-Silicon only. Transcription is intentionally macOS-only;
+    // on Windows you bring your own transcript, so this is informational, not a failure.
+    return {
+      name: "whisper",
+      status: "info",
+      detail: "local transcription (mlx) is macOS-only — provide your own transcript on Windows",
+    };
+  }
   const python = process.env.PPRO_PYTHON ?? "python3";
   try {
     await run(python, [
@@ -163,7 +225,7 @@ async function runDoctor(argv: string[]): Promise<ExitCode> {
 
   const checks: Check[] = [
     await checkPlatform(),
-    await checkPremiere(),
+    IS_WINDOWS ? await checkPremiereWindows() : await checkPremiere(),
     await checkBridge(),
     await checkFfmpeg(),
     await checkWhisper(),
