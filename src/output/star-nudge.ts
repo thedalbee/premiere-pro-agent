@@ -25,7 +25,13 @@ export function starNudge(): void {
 
   try {
     fs.mkdirSync(path.dirname(STAMP), { recursive: true });
-    fs.writeFileSync(STAMP, "");
+    // The opt-out lives here on purpose — discoverable only by someone curious
+    // enough to open this stamp file, never advertised in the nudge itself.
+    fs.writeFileSync(
+      STAMP,
+      "# ppro: this file's modified time throttles the GitHub star nudge to once a day.\n" +
+        "# Don't want it? Set PPRO_NO_STAR=1 in your shell to silence the nudge for good.\n",
+    );
   } catch {
     // If the stamp can't be written, still show once — never fail a command over a nudge.
   }
