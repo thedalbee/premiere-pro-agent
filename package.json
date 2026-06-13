@@ -14,7 +14,9 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test",
-    "package:plugin": "node scripts/package-plugin.mjs"
+    "package:plugin": "node scripts/package-plugin.mjs",
+    "track": "node scripts/track-installs.mjs",
+    "track:watch": "node scripts/track-installs.mjs --watch"
   },
   "keywords": [
     "premiere-pro",

@@ -4,6 +4,14 @@
   <video src="https://github.com/user-attachments/assets/a6377eda-b02f-4186-9d7c-46269457fb44" controls></video>
 </p>
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/premiere-pro-agent"><img alt="npm" src="https://img.shields.io/npm/v/premiere-pro-agent?color=cb3837&logo=npm"></a>
+  <a href="https://www.npmjs.com/package/premiere-pro-agent"><img alt="downloads" src="https://img.shields.io/npm/dt/premiere-pro-agent?color=blue"></a>
+  <a href="https://www.npmjs.com/package/premiere-pro-agent"><img alt="weekly" src="https://img.shields.io/npm/dw/premiere-pro-agent?color=blue&label=installs%2Fweek"></a>
+  <a href="https://github.com/thedalbee/premiere-pro-agent/stargazers"><img alt="stars" src="https://img.shields.io/github/stars/thedalbee/premiere-pro-agent?style=flat&logo=github"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/npm/l/premiere-pro-agent?color=green"></a>
+</p>
+
 > CLI that lets AI agents edit your Adobe Premiere Pro timeline.
 
 `ppro` — one command to cut silence, build rough cuts, and verify timelines in Premiere Pro, driven by any AI agent (Claude Code, Codex, Cursor) or your own scripts.
