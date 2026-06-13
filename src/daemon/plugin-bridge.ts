@@ -1,6 +1,47 @@
 import { WebSocketServer, WebSocket } from "ws";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PROTOCOL } from "../version.js";
+
+/**
+ * Decide whether a WebSocket upgrade may proceed based on its Origin header.
+ *
+ * The bridge binds to 127.0.0.1, but a malicious web page in any browser can
+ * still try to reach ws://127.0.0.1:7300 (DNS-rebinding / cross-site WebSocket
+ * hijacking). Browsers ALWAYS attach an http(s):// Origin to such a request, so
+ * rejecting http/https origins blocks every browser vector while never locking
+ * out the native UXP client — a ws:// client that connects from a
+ * manifest-declared host and does not present an http/https web origin.
+ *
+ * We deliberately do NOT yet reject `null`/`file://`/app-scheme origins: until
+ * the real UXP Origin value has been observed (it is logged on connect, see
+ * `recordOrigin`), a stricter rule risks locking out the plugin. Tighten this
+ * once that value is known.
+ */
+export function verifyOrigin(origin: string | undefined | null): boolean {
+  if (!origin) return true; // no Origin header → native client, allow
+  const lower = origin.toLowerCase();
+  if (lower.startsWith("http://") || lower.startsWith("https://")) return false;
+  return true; // ws://, null, app-specific schemes → allow (and log for review)
+}
+
+/**
+ * Append the Origin of an accepted connection to ~/.ppro/bridge-origins.log so
+ * the real UXP value can be observed without forcing a connection. Best-effort:
+ * logging must never break the bridge. The daemon is spawned with stdio
+ * "ignore", so a file is the only durable sink.
+ */
+function recordOrigin(origin: string | undefined): void {
+  try {
+    const file = path.join(os.homedir(), ".ppro", "bridge-origins.log");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${new Date().toISOString()} origin=${origin ?? "<none>"}\n`);
+  } catch {
+    /* logging is diagnostic only — never throw */
+  }
+}
 
 interface Pending {
   resolve(value: unknown): void;
@@ -28,10 +69,17 @@ export class PluginBridge {
   private pending = new Map<string, Pending>();
 
   start(port = 7300): void {
-    const server = new WebSocketServer({ host: "127.0.0.1", port });
+    const server = new WebSocketServer({
+      host: "127.0.0.1",
+      port,
+      // Reject browser web origins (DNS-rebinding / CSWSH). The native UXP
+      // client presents no http(s) web origin, so it is unaffected.
+      verifyClient: (info: { origin?: string }) => verifyOrigin(info.origin),
+    });
     this.server = server;
 
-    server.on("connection", (socket) => {
+    server.on("connection", (socket, req) => {
+      recordOrigin(req.headers.origin);
       this.plugin = socket;
 
       socket.on("message", (raw) => {
