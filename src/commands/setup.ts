@@ -9,11 +9,15 @@ import type { Command } from "../cli.js";
 import { EXIT, type ExitCode } from "../output/exit-codes.js";
 import { printJson, note } from "../output/print.js";
 import { starNudge } from "../output/star-nudge.js";
+import {
+  IS_WINDOWS,
+  isSupportedPlatform,
+  isExperimentalPlatform,
+  upiaPath,
+} from "../platform.js";
+import { zipDirectory } from "../archive/zip.js";
 
 const run = promisify(execFile);
-
-const UPIA_PATH =
-  "/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent";
 
 export interface PackageResult {
   ccxPath: string;
@@ -53,7 +57,12 @@ export async function packagePlugin(outputDir?: string): Promise<PackageResult> 
     // ignore
   }
 
-  await run("zip", ["-qr", ccxPath, ".", "-x", ".*", "-x", "*/.*"], { cwd: pluginDir });
+  if (IS_WINDOWS) {
+    // No `zip` CLI on Windows — build the .ccx with the dependency-free writer.
+    zipDirectory(pluginDir, ccxPath);
+  } else {
+    await run("zip", ["-qr", ccxPath, ".", "-x", ".*", "-x", "*/.*"], { cwd: pluginDir });
+  }
 
   return { ccxPath, pluginId, pluginVersion };
 }
@@ -64,9 +73,9 @@ async function runSetup(argv: string[]): Promise<ExitCode> {
     options: { json: { type: "boolean", default: false } },
   });
 
-  // 1. macOS only
-  if (process.platform !== "darwin") {
-    const msg = "ppro setup: macOS only for now — Windows/Linux support is planned";
+  // 1. Supported platforms only (macOS verified; Windows experimental, Linux unsupported)
+  if (!isSupportedPlatform()) {
+    const msg = `ppro setup: unsupported platform "${process.platform}" — macOS and Windows only`;
     if (values.json) {
       printJson({ ok: false, error: msg });
     } else {
@@ -74,9 +83,13 @@ async function runSetup(argv: string[]): Promise<ExitCode> {
     }
     return EXIT.FAILED;
   }
+  if (isExperimentalPlatform()) {
+    note("⚠ Windows support is experimental and not yet verified on real hardware — please report issues.");
+  }
 
   // 2. UPIA must exist
-  if (!fs.existsSync(UPIA_PATH)) {
+  const upia = upiaPath();
+  if (!upia || !fs.existsSync(upia)) {
     const msg =
       "Adobe Unified Plugin Installer Agent not found.\n" +
       "Install the Adobe Creative Cloud desktop app first, then try again.";
@@ -108,7 +121,7 @@ async function runSetup(argv: string[]): Promise<ExitCode> {
   note("Installing via UPIA…");
   let upiaOutput = "";
   try {
-    const { stdout, stderr } = await run(UPIA_PATH, ["--install", pkg.ccxPath]);
+    const { stdout, stderr } = await run(upia, ["--install", pkg.ccxPath]);
     upiaOutput = (stdout + stderr).trim();
   } catch (error) {
     // UPIA exits 0 even on failure, but capture any real exec error

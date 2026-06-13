@@ -1,0 +1,33 @@
+name: windows-ci
+
+# Verifies the cross-platform code that does NOT need Adobe software on the
+# runner: TypeScript build, the platform helpers, and the dependency-free ZIP
+# writer used to package the .ccx on Windows.
+#
+# NOT covered here (needs real Windows + Premiere + Creative Cloud, no CI runner
+# has these): UPIA plugin install, Premiere discovery, the daemon/UXP bridge.
+# Those parts are marked experimental in the code until verified on real hardware.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Portable unit tests (platform + zip)
+        run: node --test test/platform.test.mjs test/zip.test.mjs
