@@ -2,6 +2,7 @@ import { checkpoint } from "./commands/checkpoint.js";
 import { cleanup } from "./commands/cleanup.js";
 import { cut } from "./commands/cut.js";
 import { doctor } from "./commands/doctor.js";
+import { gaps } from "./commands/gaps.js";
 import { setup } from "./commands/setup.js";
 import { silence } from "./commands/silence.js";
 import { status } from "./commands/status.js";
@@ -17,7 +18,7 @@ export interface Command {
 // `undo` (src/commands/undo.ts) is intentionally NOT registered yet: its
 // destructive path (save → quit Premiere → swap checkpoint → reopen) is not
 // live-verified. Ship it in v0.2 once verified; the code + tests already exist.
-const COMMANDS: Command[] = [setup, doctor, status, transcribeCommand, silence, cut, checkpoint, cleanup];
+const COMMANDS: Command[] = [setup, doctor, status, transcribeCommand, silence, gaps, cut, checkpoint, cleanup];
 
 function printUsage(): void {
   const width = Math.max(...COMMANDS.map((c) => c.name.length));
