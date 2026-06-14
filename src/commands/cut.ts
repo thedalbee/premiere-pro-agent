@@ -8,6 +8,11 @@ import { note, printJson, sanitizePath } from "../output/print.js";
 import { callPremiere } from "../premiere/client.js";
 import { createCheckpoint } from "../premiere/checkpoint.js";
 import {
+  reopenTimeoutMs,
+  reconnectTimeoutMs,
+  projectInfoTimeoutMs,
+} from "../premiere/timeouts.js";
+import {
   mergeRanges,
   invertRanges,
   snapToFrameGrid,
@@ -22,8 +27,9 @@ const TICKS_PER_SECOND = 254016000000;
 const GAP_TOLERANCE_SEC = 0.02;
 const DURATION_TOLERANCE_SEC = 1.0;
 
-// Polling: how long to wait for the plugin to reconnect after project reopen
-const PLUGIN_RECONNECT_TIMEOUT_MS = 30_000;
+// Polling interval while waiting for the plugin to reconnect after project reopen.
+// The reopen/reconnect/project-info timeouts are resolved from env at call time
+// (see ../premiere/timeouts.js) so slow machines can raise them without code edits.
 const PLUGIN_RECONNECT_POLL_MS = 500;
 
 interface CutActionResult {
@@ -126,7 +132,7 @@ async function runCutInject(
   let projectInfo: { open: boolean; path?: string; name?: string } = { open: false };
   let premiereConnected = false;
   try {
-    projectInfo = (await callPremiere("project.info", {}, 5_000)) as typeof projectInfo;
+    projectInfo = (await callPremiere("project.info", {}, projectInfoTimeoutMs())) as typeof projectInfo;
     premiereConnected = true;
   } catch {
     note("Premiere plugin not connected — will inject without close/reopen cycle");
@@ -231,7 +237,7 @@ async function runCutInject(
     // Step 4: reopen the project
     note(`reopening project: ${sanitizePath(prprojPath)}`);
     try {
-      await callPremiere("project.open", { path: prprojPath }, 30_000);
+      await callPremiere("project.open", { path: prprojPath }, reopenTimeoutMs());
     } catch (err) {
       note(`WARNING: project.open failed: ${String(err)}`);
       note(`Please reopen "${path.basename(prprojPath)}" manually in Premiere.`);
@@ -239,7 +245,7 @@ async function runCutInject(
 
     // Step 5: poll for plugin reconnect
     note("waiting for plugin to reconnect...");
-    const reconnected = await waitForPluginReconnect(PLUGIN_RECONNECT_TIMEOUT_MS);
+    const reconnected = await waitForPluginReconnect(reconnectTimeoutMs());
     if (!reconnected) {
       note("WARNING: plugin did not reconnect within 30s — sequence may not be open in Premiere yet.");
     } else {
@@ -531,7 +537,7 @@ async function runCut(argv: string[]): Promise<ExitCode> {
   if (!prprojPath) {
     // Ask Premiere for the current project path
     try {
-      const info = (await callPremiere("project.info", {}, 5_000)) as {
+      const info = (await callPremiere("project.info", {}, projectInfoTimeoutMs())) as {
         open: boolean;
         path?: string;
       };
