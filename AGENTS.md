@@ -54,7 +54,7 @@ target sequence must already exist in that file.
 | 1    | `FAILED`         | Operation failed (internal error, UPIA rejected install, plugin threw) | Read stderr, do not retry blindly |
 | 2    | `USAGE`          | Bad arguments or missing file | Fix the command and retry |
 | 3    | `NO_CONNECTION`  | Plugin not connected (status only — see note) | Ensure Premiere is open with the panel loaded |
-| 4    | `MISSING_DEPENDENCY` | ffmpeg or mlx-whisper not found, or macOS not detected | Run `ppro doctor` and install what's missing |
+| 4    | `MISSING_DEPENDENCY` | ffmpeg or mlx-whisper not found, or an unsupported platform (only macOS and Windows are supported) | Run `ppro doctor` and install what's missing |
 | 5    | `VALIDATION`     | Build completed but post-build checks failed (clip count mismatch, gap detected, duration off) | Inspect `<stem>.cut.json` → `validation.failures`; restore from checkpoint if needed |
 
 **Important: exit 3 is only emitted by `status`.** Other commands that need Premiere
@@ -176,6 +176,8 @@ Full detail is in `<stem>.transcript.json`:
 }
 ```
 Status values: `"ok"` | `"info"` | `"fail"`. `"info"` is neutral (never causes exit 4).
+
+The example above is a macOS run. On Windows (experimental) the platform check reports `"name": "Windows (experimental)"`, and the `whisper` check is **informational** (`"status": "info"`) because local `mlx` transcription is macOS-only — on Windows you bring your own transcript and use `ppro cut`.
 
 ---
 

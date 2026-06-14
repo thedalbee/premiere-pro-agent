@@ -33,10 +33,11 @@ You pay for nothing new. If you already have **Adobe Premiere Pro** and an AI ag
 
 ## Requirements
 
-- macOS on Apple Silicon (Windows support planned)
+- macOS (Apple Silicon) or Windows (experimental) — see [Platform support](#platform-support)
 - Adobe Premiere Pro 25.6+ (tested on 26.x) with the Creative Cloud desktop app
 - Node.js 20+
-- For `transcribe` / `silence`: `ffmpeg` and Python with [`mlx-whisper`](https://github.com/ml-explore/mlx-examples) (`pip install mlx-whisper`)
+- `ffmpeg` (for `silence` / `transcribe`)
+- For `transcribe`: Python with [`mlx-whisper`](https://github.com/ml-explore/mlx-examples) (`pip install mlx-whisper`) — **macOS Apple Silicon only**. On Windows, bring your own transcript and pass removal ranges to `ppro cut`.
 
 `ppro doctor` checks all of this for you.
 
@@ -114,7 +115,7 @@ All communication stays on `127.0.0.1`. Nothing is sent to external servers:
 
 - **Localhost-only bridge.** The daemon binds to `127.0.0.1:7201` (control) and `127.0.0.1:7300` (plugin WebSocket) — it never listens on a public interface. The bridge logs the Origin of every WebSocket upgrade (`~/.ppro/bridge-origins.log`) and can **reject browser web origins** (`http(s)://`) — the defense against DNS-rebinding / cross-site WebSocket hijacking. It ships in observe-only mode (logs, does not block) so an unverified setup is never locked out; set `PPRO_ENFORCE_ORIGIN=1` to enforce once the log confirms your plugin's Origin is non-http. (A daemon↔plugin token handshake is planned as additional hardening.)
 - **No telemetry.** Zero usage data is collected. Stars and npm download counts are the only metrics tracked, and only by the platforms themselves.
-- **No API keys required.** Transcription runs locally via `mlx-whisper`. No cloud STT service is contacted.
+- **No API keys required.** When used, transcription runs locally via `mlx-whisper` (macOS Apple Silicon). The tool never contacts a cloud STT service.
 - **The maker cannot see your machine.** This tool has no remote-access surface. `ppro setup` is the only network-adjacent operation (it packages and installs a local `.ccx` file via Adobe's own installer — no download from this project's servers).
 - **No postinstall scripts.** Installation is opt-in via `ppro setup`. Nothing runs automatically on `npm install`.
 
@@ -182,11 +183,23 @@ If `ppro status` keeps failing after the first successful run, check for a stale
 
 The daemon version and the installed panel version don't match. Run `ppro setup` again — it is idempotent and will reinstall to the current version.
 
+## Platform support
+
+| Capability | macOS (Apple Silicon) | Windows |
+|---|---|---|
+| `doctor` `setup` `status` `silence` `cut` `checkpoint` + caption injection | ✅ supported | 🧪 experimental |
+| `transcribe` (local Whisper STT) | ✅ | ❌ — Apple-Silicon `mlx` only |
+
+- **macOS (Apple Silicon)** is the primary, fully-exercised platform.
+- **Windows** is **experimental**: platform branching, a dependency-free `.ccx` packager, and platform-aware `setup`/`doctor` are implemented and CI-tested on `windows-latest`, but the Windows + Premiere runtime (panel install, Premiere discovery, daemon spawn) is **not yet verified on real hardware**.
+- `ppro transcribe` runs a local Apple-Silicon model and is **macOS-only**. On Windows, generate a transcript with any tool and pass removal ranges to `ppro cut`.
+- `ppro doctor` reports exactly what your platform supports.
+
 ## Roadmap
 
 - Caption track placement (same direct-write technique)
 - Creative Cloud Marketplace listing
-- Windows support
+- Windows runtime hardening (experimental support already shipped — see [Platform support](#platform-support))
 
 ## Disclaimer
 
