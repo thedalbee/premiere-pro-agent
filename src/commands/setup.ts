@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import type { Command } from "../cli.js";
 import { EXIT, type ExitCode } from "../output/exit-codes.js";
 import { printJson, note } from "../output/print.js";
-import { starNudge } from "../output/star-nudge.js";
 import {
   IS_WINDOWS,
   isSupportedPlatform,
@@ -166,7 +165,6 @@ async function runSetup(argv: string[]): Promise<ExitCode> {
         "",
       ].join("\n"),
     );
-    starNudge();
   }
 
   return EXIT.OK;

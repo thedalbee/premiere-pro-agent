@@ -5,7 +5,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Command } from "../cli.js";
 import { EXIT, type ExitCode } from "../output/exit-codes.js";
 import { note, printJson, sanitizePath } from "../output/print.js";
-import { starNudge } from "../output/star-nudge.js";
 import { callPremiere } from "../premiere/client.js";
 import { createCheckpoint } from "../premiere/checkpoint.js";
 import {
@@ -316,7 +315,6 @@ async function doInject(
       process.stdout.write(`validation FAILED:\n${failures.map((f) => `  ✗ ${f}`).join("\n")}\n`);
     } else {
       process.stdout.write("validation passed.\n");
-      starNudge();
     }
   }
 
@@ -478,7 +476,6 @@ async function runCutLive(argv: string[]): Promise<ExitCode> {
       process.stdout.write(`validation FAILED:\n${failures.map((f) => `  ✗ ${f}`).join("\n")}\n`);
     } else {
       process.stdout.write("validation passed: zero gaps, duration matches, all audio tracks aligned\n");
-      starNudge();
     }
   }
   return failures.length === 0 ? EXIT.OK : EXIT.VALIDATION;
