@@ -34,6 +34,27 @@ const PLUGIN_RECONNECT_POLL_MS = 500;
 // How often to emit a liveness progress note during a long reconnect wait.
 const PLUGIN_RECONNECT_PROGRESS_MS = 10_000;
 
+// ── Slow-launch messaging (informational, not alarming) ────────────────────
+// After a destructive build the cut is already file-verified and a .bak exists,
+// so reopen/reconnect are pure convenience steps. When they are slow we inform
+// rather than warn — the changes are safe regardless. Exported for snapshot tests.
+export function reopenUnconfirmedMessage(projectBasename: string): string {
+  return (
+    `note: could not confirm the reopen of "${projectBasename}" yet — ` +
+    `Premiere may still be launching. Your changes are saved (a .bak backup exists); ` +
+    `if it is not open shortly, reopen the project manually.`
+  );
+}
+
+export function reconnectPendingMessage(timeoutMs: number): string {
+  const seconds = Math.round(timeoutMs / 1000);
+  return (
+    `note: the plugin has not reconnected within ${seconds}s — Premiere may still be ` +
+    `finishing launch. Your changes are saved and will appear automatically once it ` +
+    `reconnects; no manual action needed.`
+  );
+}
+
 interface CutActionResult {
   sequenceName: string;
   startIndex: number;
@@ -277,8 +298,8 @@ async function runCutInject(
     try {
       await callPremiere("project.open", { path: prprojPath }, reopenTimeoutMs());
     } catch (err) {
-      note(`WARNING: project.open failed: ${String(err)}`);
-      note(`Please reopen "${path.basename(prprojPath)}" manually in Premiere.`);
+      note(reopenUnconfirmedMessage(path.basename(prprojPath)));
+      note(`(reopen detail: ${String(err)})`);
     }
 
     // Step 5: poll for plugin reconnect
@@ -286,7 +307,7 @@ async function runCutInject(
     const reconnectTimeout = reconnectTimeoutMs();
     const reconnected = await waitForPluginReconnect(reconnectTimeout);
     if (!reconnected) {
-      note(`WARNING: plugin did not reconnect within ${Math.round(reconnectTimeout / 1000)}s — sequence may not be open in Premiere yet.`);
+      note(reconnectPendingMessage(reconnectTimeout));
     } else {
       note("plugin reconnected.");
     }
