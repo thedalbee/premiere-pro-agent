@@ -11,7 +11,11 @@
 // value and have it take effect on the next call.
 
 const DEFAULT_REOPEN_TIMEOUT_MS = 30_000;
-const DEFAULT_RECONNECT_TIMEOUT_MS = 30_000;
+// Generous ceiling: after a destructive build we reopen Premiere and wait for the
+// plugin to reconnect. On slow/cold-launch machines that can take well over 30s.
+// The cut is already file-verified, so a long wait is risk-free (not a hang) —
+// progress notes show liveness while polling. Env can lower this for fast setups.
+const DEFAULT_RECONNECT_TIMEOUT_MS = 180_000;
 const DEFAULT_PROJECT_INFO_TIMEOUT_MS = 5_000;
 
 // Robustness guard: a missing, empty, non-numeric, or non-positive env value

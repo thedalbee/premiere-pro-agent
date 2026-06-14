@@ -31,6 +31,8 @@ const DURATION_TOLERANCE_SEC = 1.0;
 // The reopen/reconnect/project-info timeouts are resolved from env at call time
 // (see ../premiere/timeouts.js) so slow machines can raise them without code edits.
 const PLUGIN_RECONNECT_POLL_MS = 500;
+// How often to emit a liveness progress note during a long reconnect wait.
+const PLUGIN_RECONNECT_PROGRESS_MS = 10_000;
 
 interface CutActionResult {
   sequenceName: string;
@@ -105,17 +107,53 @@ export function buildCutInjectDryRunPreview(opts: {
 
 // ── inject path helpers ───────────────────────────────────────────────────
 
-async function waitForPluginReconnect(timeoutMs: number): Promise<boolean> {
-  const { daemonHealth } = await import("../premiere/client.js");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await sleep(PLUGIN_RECONNECT_POLL_MS);
-    const health = await daemonHealth();
-    if (health && health !== "foreign" && health.plugin.connected) {
-      return true;
+// Injectable polling core (so the adaptive timing is unit-testable with a fake
+// clock). Polls `isConnected` every `pollMs` until `timeoutMs` elapses, emitting
+// `onProgress(elapsedMs)` roughly every `progressMs` to show the wait is alive.
+export interface ReconnectPollDeps {
+  isConnected: () => Promise<boolean>;
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+  onProgress: (elapsedMs: number) => void;
+  pollMs: number;
+  progressMs: number;
+}
+
+export async function pollForReconnect(
+  timeoutMs: number,
+  deps: ReconnectPollDeps,
+): Promise<boolean> {
+  const start = deps.now();
+  const deadline = start + timeoutMs;
+  let lastProgressAt = start;
+  while (deps.now() < deadline) {
+    await deps.sleep(deps.pollMs);
+    if (await deps.isConnected()) return true;
+    const t = deps.now();
+    if (t - lastProgressAt >= deps.progressMs) {
+      deps.onProgress(t - start);
+      lastProgressAt = t;
     }
   }
   return false;
+}
+
+async function waitForPluginReconnect(timeoutMs: number): Promise<boolean> {
+  const { daemonHealth } = await import("../premiere/client.js");
+  return pollForReconnect(timeoutMs, {
+    isConnected: async () => {
+      const health = await daemonHealth();
+      return Boolean(health && health !== "foreign" && health.plugin.connected);
+    },
+    now: () => Date.now(),
+    sleep: (ms) => sleep(ms),
+    onProgress: (elapsedMs) => {
+      const elapsedSec = Math.round(elapsedMs / 1000);
+      note(`still waiting for plugin to reconnect — Premiere may still be launching (${elapsedSec}s elapsed)`);
+    },
+    pollMs: PLUGIN_RECONNECT_POLL_MS,
+    progressMs: PLUGIN_RECONNECT_PROGRESS_MS,
+  });
 }
 
 async function runCutInject(
@@ -245,9 +283,10 @@ async function runCutInject(
 
     // Step 5: poll for plugin reconnect
     note("waiting for plugin to reconnect...");
-    const reconnected = await waitForPluginReconnect(reconnectTimeoutMs());
+    const reconnectTimeout = reconnectTimeoutMs();
+    const reconnected = await waitForPluginReconnect(reconnectTimeout);
     if (!reconnected) {
-      note("WARNING: plugin did not reconnect within 30s — sequence may not be open in Premiere yet.");
+      note(`WARNING: plugin did not reconnect within ${Math.round(reconnectTimeout / 1000)}s — sequence may not be open in Premiere yet.`);
     } else {
       note("plugin reconnected.");
     }

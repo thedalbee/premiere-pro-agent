@@ -9,7 +9,7 @@ import {
 // Each resolver: env var name, default, and the live getter.
 const cases = [
   { name: "reopen", env: "PPRO_REOPEN_TIMEOUT_MS", def: 30000, fn: reopenTimeoutMs },
-  { name: "reconnect", env: "PPRO_RECONNECT_TIMEOUT_MS", def: 30000, fn: reconnectTimeoutMs },
+  { name: "reconnect", env: "PPRO_RECONNECT_TIMEOUT_MS", def: 180000, fn: reconnectTimeoutMs },
   { name: "projectInfo", env: "PPRO_PROJECT_INFO_TIMEOUT_MS", def: 5000, fn: projectInfoTimeoutMs },
 ];
 
