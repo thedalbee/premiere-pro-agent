@@ -72,11 +72,96 @@ export function applyPadding(
   return padded;
 }
 
+// ── Voice-band + adaptive-threshold refinement (opt-in) ────────────────────
+// Optional improvement over the fixed -30dB magic number: restrict to the voice
+// band (~300-3400Hz) so low rumble / high hiss don't read as "sound", and derive
+// the threshold from the recording's own noise floor (low percentile of per-window
+// RMS + a margin) instead of a constant. Off by default; silence.json schema is
+// unchanged (the computed value simply lands in settings.thresholdDb).
+
+export const VOICE_BAND_FILTER = "highpass=f=300,lowpass=f=3400";
+
+/** Linear-interpolated p-th percentile (p in 0..100) of finite values; NaN if none. */
+export function percentile(values: number[], p: number): number {
+  const finite = values.filter((v) => Number.isFinite(v));
+  if (finite.length === 0) return NaN;
+  const sorted = [...finite].sort((a, b) => a - b);
+  if (sorted.length === 1) return sorted[0];
+  const rank = (p / 100) * (sorted.length - 1);
+  const lo = Math.floor(rank);
+  const hi = Math.ceil(rank);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (rank - lo);
+}
+
+/** Adaptive silence threshold (dB): low percentile of per-window RMS (the noise
+ * floor) plus a margin, so the cut sits just above room tone. Falls back to the
+ * fixed default when there is no usable measurement. */
+export function adaptiveThresholdDb(
+  rmsDbValues: number[],
+  marginDb: number,
+  percentileP = 5,
+  fallbackDb: number = DEFAULT_SETTINGS.thresholdDb,
+): number {
+  const floor = percentile(rmsDbValues, percentileP);
+  if (!Number.isFinite(floor)) return fallbackDb;
+  return Math.round((floor + marginDb) * 10) / 10;
+}
+
+/** Parse per-window RMS_level dB values from ffmpeg astats/ametadata stderr.
+ * "-inf" (digital-silent windows) is kept as -Infinity; percentile() drops it. */
+export function parseAstatsRmsDb(stderr: string): number[] {
+  const out: number[] = [];
+  for (const line of stderr.split("\n")) {
+    const m = line.match(/lavfi\.astats\.Overall\.RMS_level=(-?inf|-?[\d.]+)/);
+    if (m) {
+      out.push(m[1].endsWith("inf") ? -Infinity : Number.parseFloat(m[1]));
+    }
+  }
+  return out;
+}
+
+/** Measure per-window voice-band RMS (dB) across the media, for noise-floor
+ * estimation. ~1s windows after resampling to 16kHz and the voice-band filter. */
+export function measureVoiceBandRmsDb(mediaPath: string): Promise<number[]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        mediaPath,
+        "-map",
+        "0:a:0",
+        "-af",
+        `aresample=16000,${VOICE_BAND_FILTER},asetnsamples=n=16000:p=0,` +
+          `astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level`,
+        "-f",
+        "null",
+        "-",
+      ],
+      { timeout: 600_000, maxBuffer: 64 * 1024 * 1024 },
+      (error, _stdout, stderr) => {
+        const values = parseAstatsRmsDb(stderr);
+        if (values.length === 0 && error) {
+          reject(error);
+          return;
+        }
+        resolve(values);
+      },
+    );
+  });
+}
+
 export function detectSilence(
   mediaPath: string,
   settings: SilenceSettings,
   totalDurationSec: number,
+  options: { bandpass?: boolean } = {},
 ): Promise<SilenceRange[]> {
+  const silenceFilter = `silencedetect=n=${settings.thresholdDb}dB:d=${settings.minDurationSec}`;
+  const filterChain = options.bandpass ? `${VOICE_BAND_FILTER},${silenceFilter}` : silenceFilter;
   return new Promise((resolve, reject) => {
     execFile(
       "ffmpeg",
@@ -84,7 +169,7 @@ export function detectSilence(
         "-i",
         mediaPath,
         "-af",
-        `silencedetect=n=${settings.thresholdDb}dB:d=${settings.minDurationSec}`,
+        filterChain,
         "-f",
         "null",
         "-",
