@@ -1,7 +1,7 @@
 # premiere-pro-agent
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/a6377eda-b02f-4186-9d7c-46269457fb44" controls></video>
+  <video src="https://thedalbee.com/ppro-demo.mp4" controls></video>
 </p>
 
 <p align="center">
