@@ -1,11 +1,9 @@
 {
   "name": "premiere-pro-agent",
   "version": "0.2.0",
-  "description": "CLI that lets AI agents edit your Adobe Premiere Pro timeline.",
+  "description": "CLI that lets AI agents edit Adobe Premiere Pro timelines.",
   "license": "MIT",
-  "author": "달비 (https://thedalbee.com)",
-  "homepage": "https://thedalbee.com/ppro",
-  "bugs": "mailto:hello@thedalbee.com",
+  "author": "달비",
   "type": "module",
   "bin": {
     "ppro": "bin/ppro.mjs"
@@ -16,10 +14,7 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test",
-    "package:plugin": "node scripts/package-plugin.mjs",
-    "track": "node scripts/track-installs.mjs",
-    "track:watch": "node scripts/track-installs.mjs --watch",
-    "track:log": "node scripts/track-installs.mjs --log"
+    "package:plugin": "node scripts/package-plugin.mjs"
   },
   "keywords": [
     "premiere-pro",

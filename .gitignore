@@ -2,4 +2,9 @@ node_modules/
 dist/
 *.log
 .DS_Store
-.tracking/
+
+# local-only dev planning — never committed/pushed
+DEV-ROADMAP.md
+
+# codegraph 로컬 인덱스 (배포/커밋 제외)
+.codegraph/
