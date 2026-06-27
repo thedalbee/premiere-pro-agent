@@ -1,10 +1,17 @@
 {
   "name": "premiere-pro-agent",
   "version": "0.2.0",
-  "description": "CLI that lets AI agents edit Adobe Premiere Pro timelines.",
+  "description": "Local CLI for creating Premiere Pro cut sequences from JSON time ranges.",
   "license": "MIT",
   "author": "달비",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thedalbee/premiere-pro-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thedalbee/premiere-pro-agent/issues"
+  },
   "bin": {
     "ppro": "bin/ppro.mjs"
   },
@@ -18,11 +25,8 @@
   },
   "keywords": [
     "premiere-pro",
-    "adobe",
-    "ai-agent",
     "video-editing",
-    "cli",
-    "agent"
+    "cli"
   ],
   "files": [
     "README.md",
