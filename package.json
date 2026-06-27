@@ -30,6 +30,8 @@
   ],
   "files": [
     "README.md",
+    "README.ko.md",
+    "README.zh-CN.md",
     "bin",
     "dist",
     "plugin"

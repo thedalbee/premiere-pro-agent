@@ -1,5 +1,7 @@
 # premiere-pro-agent
 
+[한국어](README.ko.md) | [中文](README.zh-CN.md)
+
 Local CLI for building Adobe Premiere Pro cut sequences from timestamp ranges.
 
 `ppro` handles the mechanical Premiere Pro project operations. You choose the
